@@ -1,4 +1,374 @@
--- Lyra UI redesign
+-- ULTIMATE ANTI‑CHEAT BYPASS v7.1 – Football Fusion (with console banner)
+-- This script now prints the giant ASCII banner to the developer console.
+-- All previous compatibility fixes are preserved.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================================
+-- 0. PRINT THE BANNER TO CONSOLE
+-- ============================================================
+local banner = [[
+                                      
+>> LYRA ANTI-CHEAT LOADED SUCCESSFULLY <<]]
+print(banner)
+print(">> LYRA ANTI‑CHEAT BYPASS v7.1 LOADED FOR FOOTBALL FUSION <<")
+print(">> ALL CLIENT‑SIDE DETECTION NEUTRALIZED <<")
+
+-- ============================================================
+-- MAIN BYPASS LOGIC
+-- ============================================================
+local function main()
+-- 1. SUPPRESS TopBarPlus RICH‑TEXT ERROR
+local function sanitizeRichText(str)
+if type(str) ~= "string" then return str end
+return str:gsub("%<[^>]*%>", "")
+end
+
+local function sanitizeGUI(instance)
+if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+local current = instance.Text
+local clean = sanitizeRichText(current)
+if current ~= clean then instance.Text = clean end
+instance:GetPropertyChangedSignal("Text"):Connect(function()
+local raw = instance.Text
+local cleaned = sanitizeRichText(raw)
+if raw ~= cleaned then instance.Text = cleaned end
+end)
+pcall(function() instance.RichText = false end)
+end
+for _, child in ipairs(instance:GetChildren()) do
+sanitizeGUI(child)
+end
+end
+
+local function applyToAllGUI()
+local guis = {CoreGui, LocalPlayer:FindFirstChild("PlayerGui")}
+for _, gui in ipairs(guis) do
+if gui then
+sanitizeGUI(gui)
+gui.ChildAdded:Connect(function(child)
+task.wait(0.05)
+sanitizeGUI(child)
+end)
+end
+end
+end
+applyToAllGUI()
+
+local oldXpcall = xpcall
+xpcall = function(f, errhandler, ...)
+return oldXpcall(f, function(err)
+if type(err) == "string" and err:find("Expected 'I' to close 'I'") then
+return true
+end
+return errhandler(err)
+end, ...)
+end
+
+local oldPcall = pcall
+pcall = function(f, ...)
+local ok, result = oldPcall(f, ...)
+if not ok and type(result) == "string" and result:find("Expected 'I' to close 'I'") then
+return true
+end
+return ok, result
+end
+
+local oldError = error
+error = function(msg, level)
+if type(msg) == "string" and msg:find("Expected 'I' to close 'I'") then
+return
+end
+oldError(msg, level)
+end
+
+-- 2. NETWORK & PING SPOOFING
+local function spoofNetworkStats()
+local network = Stats:FindFirstChild("Network")
+if network then
+local serverStats = network:FindFirstChild("ServerStatsItem")
+if serverStats then
+local dataPing = serverStats:FindFirstChild("Data Ping")
+if dataPing and dataPing.GetValue then
+local oldGet = dataPing.GetValue
+dataPing.GetValue = function(self)
+return math.random(30, 120) + (math.random() - 0.5) * 10
+end
+end
+local ping = serverStats:FindFirstChild("Ping")
+if ping and ping.GetValue then
+local oldGetPing = ping.GetValue
+ping.GetValue = function(self)
+return math.random(40, 100) + (math.random() - 0.5) * 15
+end
+end
+end
+end
+if LocalPlayer.GetNetworkPing then
+local oldPing = LocalPlayer.GetNetworkPing
+LocalPlayer.GetNetworkPing = function(self)
+return (math.random(30, 90) + (math.random() - 0.5) * 20) / 1000
+end
+end
+end
+spoofNetworkStats()
+
+-- 3. REMOTE EVENT INTERCEPTION
+local function hookRemote(obj)
+if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+local oldFire = obj.FireServer
+if not oldFire then return end
+obj.FireServer = function(self, ...)
+local args = {...}
+local concat = ""
+for i, v in ipairs(args) do
+concat = concat .. tostring(v):lower() .. " "
+end
+if concat:find("anticheat") or concat:find("report") or concat:find("violation") or concat:find("ban") then
+if obj:IsA("RemoteFunction") then
+return true
+end
+return
+end
+local newArgs = {}
+for i, v in ipairs(args) do
+if type(v) == "table" and v.X and v.Y and v.Z then
+local jitter = 0.2 + math.random() * 0.3
+newArgs[i] = Vector3.new(
+v.X + (math.random() - 0.5) * jitter,
+v.Y + (math.random() - 0.5) * jitter,
+v.Z + (math.random() - 0.5) * jitter
+)
+else
+newArgs[i] = v
+end
+end
+return oldFire(self, unpack(newArgs))
+end
+end
+end
+
+local function hookAll(parent)
+for _, child in ipairs(parent:GetChildren()) do
+hookRemote(child)
+hookAll(child)
+end
+end
+hookAll(ReplicatedStorage)
+ReplicatedStorage.ChildAdded:Connect(function(child)
+task.wait(0.1)
+hookRemote(child)
+hookAll(child)
+end)
+
+-- 4. ANTI‑CHEAT FLAG OVERRIDE
+local function sanitizeFlag(value)
+if value:IsA("BoolValue") then
+if value.Value == true then value.Value = false end
+value:GetPropertyChangedSignal("Value"):Connect(function()
+if value.Value == true then value.Value = false end
+end)
+elseif value:IsA("StringValue") then
+if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
+value:GetPropertyChangedSignal("Value"):Connect(function()
+if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
+end)
+end
+end
+
+local function scanForFlags(instance)
+for _, child in ipairs(instance:GetChildren()) do
+if child:IsA("BoolValue") or child:IsA("StringValue") then
+local name = child.Name:lower()
+if name:find("cheat") or name:find("ban") or name:find("detect") or name:find("flag") or name:find("violation") then
+sanitizeFlag(child)
+end
+end
+scanForFlags(child)
+end
+end
+
+local containers = {ReplicatedStorage, LocalPlayer, Workspace, CoreGui}
+for _, cont in ipairs(containers) do
+scanForFlags(cont)
+cont.ChildAdded:Connect(function(child)
+task.wait(0.2)
+scanForFlags(child)
+end)
+end
+
+-- 5. VELOCITY & CFRAME SMOOTHING
+local function velocitySpoofer(char)
+local hrp = char:FindFirstChild("HumanoidRootPart")
+if not hrp then return end
+RunService.Heartbeat:Connect(function(delta)
+if not hrp.Parent then return end
+local current = hrp.AssemblyLinearVelocity
+local maxNormal = 80
+if current.Magnitude > maxNormal then
+local scale = maxNormal / current.Magnitude
+hrp.AssemblyLinearVelocity = current * scale
+end
+local jitter = Vector3.new(
+(math.random() - 0.5) * 0.2,
+(math.random() - 0.5) * 0.2,
+(math.random() - 0.5) * 0.2
+)
+hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity + jitter
+end)
+local oldPos = hrp.Position
+hrp:GetPropertyChangedSignal("CFrame"):Connect(function()
+local newPos = hrp.Position
+local dist = (newPos - oldPos).Magnitude
+if dist > 30 then
+task.spawn(function()
+local mid = oldPos:Lerp(newPos, 0.5)
+hrp.CFrame = CFrame.new(mid)
+task.wait(0.01)
+hrp.CFrame = CFrame.new(newPos)
+end)
+end
+oldPos = newPos
+end)
+end
+
+local function onCharacterAdded(char)
+velocitySpoofer(char)
+scanForFlags(char)
+end
+
+if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+
+-- 6. REQUIRE HOOK FOR MODULE PROTECTION
+local oldRequire = game.Require
+game.Require = function(module)
+local result = oldRequire(module)
+if type(result) == "table" then
+for k, v in pairs(result) do
+if type(k) == "string" and (k:lower():find("cheat") or k:lower():find("ban") or k:lower():find("detect")) then
+if type(v) == "boolean" then result[k] = false
+elseif type(v) == "number" and v > 0 then result[k] = 0 end
+end
+end
+local mt = getmetatable(result)
+if mt and mt.__index then
+local oldIndex = mt.__index
+mt.__index = function(t, key)
+if type(key) == "string" and (key:lower():find("cheat") or key:lower():find("ban") or key:lower():find("detect")) then
+return false
+end
+return oldIndex(t, key)
+end
+end
+end
+return result
+end
+
+-- 7. SUPPRESS LOGGING
+local oldPrint = print
+print = function(...)
+local args = {...}
+for _, msg in ipairs(args) do
+if type(msg) == "string" then
+local lower = msg:lower()
+if lower:find("cheat") or lower:find("ban") or lower:find("hack") or lower:find("exploit") then
+return
+end
+end
+end
+oldPrint(...)
+end
+
+local oldWarn = warn
+warn = function(...)
+local args = {...}
+for _, msg in ipairs(args) do
+if type(msg) == "string" then
+local lower = msg:lower()
+if lower:find("cheat") or lower:find("ban") or lower:find("hack") or lower:find("exploit") then
+return
+end
+end
+end
+oldWarn(...)
+end
+
+-- 8. PERIODIC REINFORCEMENT
+task.spawn(function()
+while true do
+task.wait(5)
+for _, cont in ipairs(containers) do scanForFlags(cont) end
+spoofNetworkStats()
+end
+end)
+
+-- 9. BLOCK BAN / ANTICHEAT REMOTES
+local function findAndBlockRemote(namePattern)
+local function search(parent)
+for _, child in ipairs(parent:GetChildren()) do
+if child:IsA("RemoteEvent") and child.Name:lower():find(namePattern) then
+child.FireServer = function() end
+end
+search(child)
+end
+end
+search(ReplicatedStorage)
+end
+findAndBlockRemote("ban")
+findAndBlockRemote("anticheat")
+findAndBlockRemote("report")
+
+-- 10. CLAMP POSITION TO FIELD
+local function clampPosition(char)
+local hrp = char:FindFirstChild("HumanoidRootPart")
+if not hrp then return end
+local models = Workspace:FindFirstChild("Models")
+if not models then return end
+local field = models:FindFirstChild("Field")
+if not field then return end
+local ground = field:FindFirstChild("Ground")
+if not ground then return end
+local pos = hrp.Position
+local center = ground.Position
+local halfX = 75
+local halfZ = 175
+local newPos = Vector3.new(
+math.clamp(pos.X, center.X - halfX, center.X + halfX),
+pos.Y,
+math.clamp(pos.Z, center.Z - halfZ, center.Z + halfZ)
+)
+if (newPos - pos).Magnitude > 0.5 then
+hrp.Position = newPos
+end
+end
+
+RunService.Heartbeat:Connect(function()
+local char = LocalPlayer.Character
+if char then clampPosition(char) end
+end)
+
+print(">> LYRA BYPASS ACTIVE – READY FOR FOOTBALL FUSION <<")
+end
+
+-- Execute with error handling.
+local ok, err = pcall(main)
+if not ok then
+warn("Bypass load error: " .. tostring(err))
+if type(err) == "string" and (err:find("GetValue") or err:find("RunningAverageItemInt")) then
+warn("Not in Football Fusion – some stats spoofing skipped.")
+end
+end
+
+print(">> EXECUTE LYRA UI NOW <<")-- Lyra UI redesign
 -- Mobile-first interface shell
 
 local UserInputService = game:GetService('UserInputService')
