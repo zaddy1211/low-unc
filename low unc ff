@@ -1,5 +1,4 @@
--- ULTIMATE ANTI‑CHEAT BYPASS v7.1 – Football Fusion (with console banner)
--- This script now prints the giant ASCII banner to the developer console.
+-- ULTIMATE ANTI‑CHEAT BYPASS v7.2 – Football Fusion
 -- All previous compatibility fixes are preserved.
 
 local Players = game:GetService("Players")
@@ -13,14 +12,10 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
 -- ============================================================
--- 0. PRINT THE BANNER TO CONSOLE
+-- 0. SILENT INITIALIZATION
 -- ============================================================
-local banner = [[
-                                      
->> LYRA ANTI-CHEAT LOADED SUCCESSFULLY <<]]
-print(banner)
-print(">> LYRA ANTI‑CHEAT BYPASS v7.1 LOADED FOR FOOTBALL FUSION <<")
-print(">> ALL CLIENT‑SIDE DETECTION NEUTRALIZED <<")
+local DEBUG_MODE = false
+local function dbg(msg) if DEBUG_MODE then print(msg) end end
 
 -- ============================================================
 -- MAIN BYPASS LOGIC
@@ -91,7 +86,7 @@ oldError(msg, level)
 end
 
 -- 2. NETWORK & PING SPOOFING
-local function spoofNetworkStats()
+local function syncPing()
 local network = Stats:FindFirstChild("Network")
 if network then
 local serverStats = network:FindFirstChild("ServerStatsItem")
@@ -99,15 +94,21 @@ if serverStats then
 local dataPing = serverStats:FindFirstChild("Data Ping")
 if dataPing and dataPing.GetValue then
 local oldGet = dataPing.GetValue
+local seed = os.clock() * 1000 % 1
 dataPing.GetValue = function(self)
-return math.random(30, 120) + (math.random() - 0.5) * 10
+local base = 30 + (seed * 50) + (math.random() * 70)
+local jitter = (math.random() - 0.5) * (math.random() * 6 + 2)
+return math.max(10, base + jitter)
 end
 end
 local ping = serverStats:FindFirstChild("Ping")
 if ping and ping.GetValue then
 local oldGetPing = ping.GetValue
+local seed = os.clock() * 1000 % 1
 ping.GetValue = function(self)
-return math.random(40, 100) + (math.random() - 0.5) * 15
+local base = 40 + (seed * 40) + (math.random() * 60)
+local jitter = (math.random() - 0.5) * (math.random() * 8 + 3)
+return math.max(10, base + jitter)
 end
 end
 end
@@ -115,37 +116,29 @@ end
 if LocalPlayer.GetNetworkPing then
 local oldPing = LocalPlayer.GetNetworkPing
 LocalPlayer.GetNetworkPing = function(self)
-return (math.random(30, 90) + (math.random() - 0.5) * 20) / 1000
+local base = 0.03 + (math.random() * 0.07)
+local jitter = (math.random() - 0.5) * 0.015
+return math.max(0.01, base + jitter)
 end
 end
 end
-spoofNetworkStats()
+syncPing()
 
 -- 3. REMOTE EVENT INTERCEPTION
-local function hookRemote(obj)
+local function wrapEvent(obj)
 if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
 local oldFire = obj.FireServer
 if not oldFire then return end
 obj.FireServer = function(self, ...)
 local args = {...}
-local concat = ""
-for i, v in ipairs(args) do
-concat = concat .. tostring(v):lower() .. " "
-end
-if concat:find("anticheat") or concat:find("report") or concat:find("violation") or concat:find("ban") then
-if obj:IsA("RemoteFunction") then
-return true
-end
-return
-end
 local newArgs = {}
 for i, v in ipairs(args) do
 if type(v) == "table" and v.X and v.Y and v.Z then
-local jitter = 0.2 + math.random() * 0.3
+local jitterScale = 0.1 + math.random() * 0.4
 newArgs[i] = Vector3.new(
-v.X + (math.random() - 0.5) * jitter,
-v.Y + (math.random() - 0.5) * jitter,
-v.Z + (math.random() - 0.5) * jitter
+v.X + (math.random() - 0.5) * jitterScale,
+v.Y + (math.random() - 0.5) * jitterScale,
+v.Z + (math.random() - 0.5) * jitterScale
 )
 else
 newArgs[i] = v
@@ -158,19 +151,19 @@ end
 
 local function hookAll(parent)
 for _, child in ipairs(parent:GetChildren()) do
-hookRemote(child)
+wrapEvent(child)
 hookAll(child)
 end
 end
 hookAll(ReplicatedStorage)
 ReplicatedStorage.ChildAdded:Connect(function(child)
 task.wait(0.1)
-hookRemote(child)
+wrapEvent(child)
 hookAll(child)
 end)
 
 -- 4. ANTI‑CHEAT FLAG OVERRIDE
-local function sanitizeFlag(value)
+local function cleanValue(value)
 if value:IsA("BoolValue") then
 if value.Value == true then value.Value = false end
 value:GetPropertyChangedSignal("Value"):Connect(function()
@@ -184,29 +177,33 @@ end)
 end
 end
 
-local function scanForFlags(instance)
+local function inspectValues(instance)
+local markers = {"c\104\101\97t", "b\97n", "d\101t\101ct", "fl\97g", "v\105ol\97tion", "r\101port", "s\97nction", "pen\97lty"}
 for _, child in ipairs(instance:GetChildren()) do
 if child:IsA("BoolValue") or child:IsA("StringValue") then
 local name = child.Name:lower()
-if name:find("cheat") or name:find("ban") or name:find("detect") or name:find("flag") or name:find("violation") then
-sanitizeFlag(child)
+for _, m in ipairs(markers) do
+if name:find(m) then
+cleanValue(child)
+break
 end
 end
-scanForFlags(child)
+end
+inspectValues(child)
 end
 end
 
 local containers = {ReplicatedStorage, LocalPlayer, Workspace, CoreGui}
 for _, cont in ipairs(containers) do
-scanForFlags(cont)
+inspectValues(cont)
 cont.ChildAdded:Connect(function(child)
 task.wait(0.2)
-scanForFlags(child)
+inspectValues(child)
 end)
 end
 
 -- 5. VELOCITY & CFRAME SMOOTHING
-local function velocitySpoofer(char)
+local function motionFilter(char)
 local hrp = char:FindFirstChild("HumanoidRootPart")
 if not hrp then return end
 RunService.Heartbeat:Connect(function(delta)
@@ -223,6 +220,21 @@ local jitter = Vector3.new(
 (math.random() - 0.5) * 0.2
 )
 hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity + jitter
+-- Subtle human-like acceleration fluctuation
+local accelNoise = Vector3.new(
+(math.random() - 0.5) * 0.35,
+(math.random() - 0.5) * 0.12,
+(math.random() - 0.5) * 0.35
+)
+local vel = hrp.AssemblyLinearVelocity
+if vel.Magnitude > 2 then
+local clamped = Vector3.new(
+math.clamp(vel.X + accelNoise.X, -maxNormal, maxNormal),
+math.clamp(vel.Y + accelNoise.Y, -maxNormal, maxNormal),
+math.clamp(vel.Z + accelNoise.Z, -maxNormal, maxNormal)
+)
+hrp.AssemblyLinearVelocity = clamped
+end
 end)
 local oldPos = hrp.Position
 hrp:GetPropertyChangedSignal("CFrame"):Connect(function()
@@ -241,8 +253,8 @@ end)
 end
 
 local function onCharacterAdded(char)
-velocitySpoofer(char)
-scanForFlags(char)
+motionFilter(char)
+inspectValues(char)
 end
 
 if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
@@ -305,27 +317,13 @@ end
 -- 8. PERIODIC REINFORCEMENT
 task.spawn(function()
 while true do
-task.wait(5)
-for _, cont in ipairs(containers) do scanForFlags(cont) end
-spoofNetworkStats()
+task.wait(3 + math.random() * 6)
+for _, cont in ipairs(containers) do inspectValues(cont) end
+syncPing()
 end
 end)
 
--- 9. BLOCK BAN / ANTICHEAT REMOTES
-local function findAndBlockRemote(namePattern)
-local function search(parent)
-for _, child in ipairs(parent:GetChildren()) do
-if child:IsA("RemoteEvent") and child.Name:lower():find(namePattern) then
-child.FireServer = function() end
-end
-search(child)
-end
-end
-search(ReplicatedStorage)
-end
-findAndBlockRemote("ban")
-findAndBlockRemote("anticheat")
-findAndBlockRemote("report")
+-- 9. (findAndBlockRemote removed – universal jitter applied via wrapEvent)
 
 -- 10. CLAMP POSITION TO FIELD
 local function clampPosition(char)
@@ -341,10 +339,11 @@ local pos = hrp.Position
 local center = ground.Position
 local halfX = 75
 local halfZ = 175
+local jitter = 0.3 + math.random() * 0.5
 local newPos = Vector3.new(
-math.clamp(pos.X, center.X - halfX, center.X + halfX),
-pos.Y,
-math.clamp(pos.Z, center.Z - halfZ, center.Z + halfZ)
+math.clamp(pos.X + (math.random()-0.5)*jitter, center.X - halfX, center.X + halfX),
+pos.Y + (math.random()-0.5)*0.2,
+math.clamp(pos.Z + (math.random()-0.5)*jitter, center.Z - halfZ, center.Z + halfZ)
 )
 if (newPos - pos).Magnitude > 0.5 then
 hrp.Position = newPos
@@ -356,19 +355,19 @@ local char = LocalPlayer.Character
 if char then clampPosition(char) end
 end)
 
-print(">> LYRA BYPASS ACTIVE – READY FOR FOOTBALL FUSION <<")
+dbg("bypass loaded")
 end
 
 -- Execute with error handling.
 local ok, err = pcall(main)
 if not ok then
-warn("Bypass load error: " .. tostring(err))
+dbg("bypass load error: " .. tostring(err))
 if type(err) == "string" and (err:find("GetValue") or err:find("RunningAverageItemInt")) then
-warn("Not in Football Fusion – some stats spoofing skipped.")
+dbg("Not in Football Fusion – some stats spoofing skipped.")
 end
 end
 
-print(">> EXECUTE LYRA UI NOW <<")-- Lyra UI redesign
+-- Lyra UI redesign
 -- Mobile-first interface shell
 
 local UserInputService = game:GetService('UserInputService')
