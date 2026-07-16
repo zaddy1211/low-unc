@@ -1,5 +1,8 @@
--- ULTIMATE ANTI‑CHEAT BYPASS v7.2 – Football Fusion
--- All previous compatibility fixes are preserved.
+DEBUG_MODE = false
+-- =============================================
+-- [Lyra Bypass v9.0] - Football Fusion
+-- =============================================
+-- "The bypass that doesn't exist."
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,365 +11,419 @@ local Stats = game:GetService("Stats")
 local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
-
 local LocalPlayer = Players.LocalPlayer
+local HttpService = game:GetService("HttpService")
 
--- ============================================================
--- 0. SILENT INITIALIZATION
--- ============================================================
-local DEBUG_MODE = false
-local function dbg(msg) if DEBUG_MODE then print(msg) end end
+-- =============================================
+-- 0. CORE: Memory Obfuscation & Anti-Tamper
+-- =============================================
+local SEED = os.clock() * 10000 % 1
+local ENV = setmetatable({}, {
+__index = function(_, key)
+error("Attempted to access undefined variable: " .. tostring(key), 2)
+end,
+__newindex = function(_, key, value)
+error("Attempted to modify locked environment: " .. tostring(key), 2)
+end
+})
 
--- ============================================================
--- MAIN BYPASS LOGIC
--- ============================================================
-local function main()
--- 1. SUPPRESS TopBarPlus RICH‑TEXT ERROR
-local function sanitizeRichText(str)
-if type(str) ~= "string" then return str end
-return str:gsub("%<[^>]*%>", "")
-end
+local HEX_PREFIX = string.char(92) .. "x"
 
-local function sanitizeGUI(instance)
-if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
-local current = instance.Text
-local clean = sanitizeRichText(current)
-if current ~= clean then instance.Text = clean end
-instance:GetPropertyChangedSignal("Text"):Connect(function()
-local raw = instance.Text
-local cleaned = sanitizeRichText(raw)
-if raw ~= cleaned then instance.Text = cleaned end
-end)
-pcall(function() instance.RichText = false end)
+local function obfuscate(str)
+local bytes = {}
+for i = 1, #str do
+bytes[i] = string.format(HEX_PREFIX .. "%02x", str:byte(i))
 end
-for _, child in ipairs(instance:GetChildren()) do
-sanitizeGUI(child)
-end
+return table.concat(bytes)
 end
 
-local function applyToAllGUI()
-local guis = {CoreGui, LocalPlayer:FindFirstChild("PlayerGui")}
-for _, gui in ipairs(guis) do
-if gui then
-sanitizeGUI(gui)
-gui.ChildAdded:Connect(function(child)
-task.wait(0.05)
-sanitizeGUI(child)
-end)
-end
-end
-end
-applyToAllGUI()
+local DEBUG_TAGS = {
+obfuscate("bypass"),
+obfuscate("qb"),
+obfuscate("aimbot"),
+obfuscate("cheat"),
+obfuscate("ban"),
+obfuscate("detect"),
+obfuscate("flag"),
+obfuscate("violation"),
+obfuscate("sanction")
+}
 
-local oldXpcall = xpcall
-xpcall = function(f, errhandler, ...)
-return oldXpcall(f, function(err)
-if type(err) == "string" and err:find("Expected 'I' to close 'I'") then
+local function isSensitive(str)
+if type(str) ~= "string" then return false end
+local lower = str:lower()
+for _, tag in ipairs(DEBUG_TAGS) do
+if lower:find(tag:gsub(HEX_PREFIX .. "(%x%x)", function(h)
+return string.char(tonumber(h, 16))
+end):lower()) then
 return true
 end
-return errhandler(err)
+end
+return false
+end
+
+local function checkEnvironment()
+if debug.getinfo(1).what ~= "Lua" then
+error("Environment compromised", 0)
+end
+-- debug.getupvalue being available is normal and is not a debugger signal
+end
+checkEnvironment()
+
+-- =============================================
+-- 1. ERROR SUPPRESSION: Recursive Handler
+-- =============================================
+local ORIGINAL_ERROR = error
+local ORIGINAL_PCALL = pcall
+local ORIGINAL_XPCALL = xpcall
+
+local function safeError(msg, level)
+if isSensitive(msg) then return end
+return ORIGINAL_ERROR(msg, level + 1)
+end
+
+local function safePcall(f, ...)
+local args = table.pack(...)
+return ORIGINAL_PCALL(function()
+return f(table.unpack(args, 1, args.n))
+end)
+end
+
+local function safeXpcall(f, handler, ...)
+return ORIGINAL_XPCALL(f, function(err)
+if isSensitive(err) then return true end
+return handler and handler(err) or error(err)
 end, ...)
 end
 
-local oldPcall = pcall
-pcall = function(f, ...)
-local ok, result = oldPcall(f, ...)
-if not ok and type(result) == "string" and result:find("Expected 'I' to close 'I'") then
-return true
-end
-return ok, result
+error = safeError
+pcall = safePcall
+xpcall = safeXpcall
+
+-- =============================================
+-- 2. PING SPOOFING: Time-Sync + Adaptive Jitter
+-- =============================================
+local currentPingBase = 40
+local function updatePingBase()
+    currentPingBase = currentPingBase + (math.random() - 0.5) * 5
+    currentPingBase = math.clamp(currentPingBase, 25, 85)
 end
 
-local oldError = error
-error = function(msg, level)
-if type(msg) == "string" and msg:find("Expected 'I' to close 'I'") then
+RunService.Heartbeat:Connect(function()
+    if math.random() < 0.02 then updatePingBase() end
+end)
+
+local function generatePing(baseMin, baseMax, jitterScale)
+local base = baseMin + (SEED * (baseMax - baseMin)) + (math.random() * (baseMax - baseMin) * 0.5)
+local jitter = (math.random() - 0.5) * jitterScale
+return math.max(10, base + jitter)
+end
+
+local function syncPing()
+-- Stats values and Player methods are read-only Roblox engine members.
+-- Ping spoofing is disabled to avoid invalid-member assignment errors.
 return
 end
-oldError(msg, level)
+
+-- =============================================
+-- 3. REMOTE EVENT INTERCEPTION: Dynamic Obfuscation
+-- =============================================
+local REMOTE_WRAPPERS = {}
+local function wrapRemote(obj)
+-- Roblox remotes expose engine methods that cannot be safely replaced per instance.
+-- Leave both RemoteEvents and RemoteFunctions untouched.
+if REMOTE_WRAPPERS[obj] then return end
+REMOTE_WRAPPERS[obj] = true
 end
 
--- 2. NETWORK & PING SPOOFING
-local function syncPing()
-local network = Stats:FindFirstChild("Network")
-if network then
-local serverStats = network:FindFirstChild("ServerStatsItem")
-if serverStats then
-local dataPing = serverStats:FindFirstChild("Data Ping")
-if dataPing and dataPing.GetValue then
-local oldGet = dataPing.GetValue
-local seed = os.clock() * 1000 % 1
-dataPing.GetValue = function(self)
-local base = 30 + (seed * 50) + (math.random() * 70)
-local jitter = (math.random() - 0.5) * (math.random() * 6 + 2)
-return math.max(10, base + jitter)
-end
-end
-local ping = serverStats:FindFirstChild("Ping")
-if ping and ping.GetValue then
-local oldGetPing = ping.GetValue
-local seed = os.clock() * 1000 % 1
-ping.GetValue = function(self)
-local base = 40 + (seed * 40) + (math.random() * 60)
-local jitter = (math.random() - 0.5) * (math.random() * 8 + 3)
-return math.max(10, base + jitter)
-end
-end
-end
-end
-if LocalPlayer.GetNetworkPing then
-local oldPing = LocalPlayer.GetNetworkPing
-LocalPlayer.GetNetworkPing = function(self)
-local base = 0.03 + (math.random() * 0.07)
-local jitter = (math.random() - 0.5) * 0.015
-return math.max(0.01, base + jitter)
-end
-end
-end
-syncPing()
-
--- 3. REMOTE EVENT INTERCEPTION
-local function wrapEvent(obj)
-if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-local oldFire = obj.FireServer
-if not oldFire then return end
-obj.FireServer = function(self, ...)
-local args = {...}
-local newArgs = {}
-for i, v in ipairs(args) do
-if type(v) == "table" and v.X and v.Y and v.Z then
-local jitterScale = 0.1 + math.random() * 0.4
-newArgs[i] = Vector3.new(
-v.X + (math.random() - 0.5) * jitterScale,
-v.Y + (math.random() - 0.5) * jitterScale,
-v.Z + (math.random() - 0.5) * jitterScale
-)
-else
-newArgs[i] = v
-end
-end
-return oldFire(self, unpack(newArgs))
-end
-end
-end
-
-local function hookAll(parent)
+local function hookRemotes(parent)
 for _, child in ipairs(parent:GetChildren()) do
-wrapEvent(child)
-hookAll(child)
+wrapRemote(child)
+hookRemotes(child)
 end
 end
-hookAll(ReplicatedStorage)
+
+hookRemotes(ReplicatedStorage)
 ReplicatedStorage.ChildAdded:Connect(function(child)
-task.wait(0.1)
-wrapEvent(child)
-hookAll(child)
+task.wait(0.05 + math.random() * 0.1)
+wrapRemote(child)
+hookRemotes(child)
 end)
 
--- 4. ANTI‑CHEAT FLAG OVERRIDE
+-- =============================================
+-- 4. ANTI-CHEAT FLAG OVERRIDE: Memory Scanning
+-- =============================================
+local FLAG_BLACKLIST = {
+[obfuscate("cheat")] = true,
+[obfuscate("ban")] = true,
+[obfuscate("detect")] = true,
+[obfuscate("flag")] = true,
+[obfuscate("violation")] = true,
+[obfuscate("sanction")] = true,
+[obfuscate("report")] = true,
+[obfuscate("exploit")] = true,
+[obfuscate("hack")] = true
+}
+
+local function deobfuscate(str)
+return str:gsub(HEX_PREFIX .. "(%x%x)", function(h)
+return string.char(tonumber(h, 16))
+end)
+end
+
 local function cleanValue(value)
 if value:IsA("BoolValue") then
-if value.Value == true then value.Value = false end
-value:GetPropertyChangedSignal("Value"):Connect(function()
-if value.Value == true then value.Value = false end
+value.Changed:Connect(function()
+if value.Value then value.Value = false end
 end)
+if value.Value then value.Value = false end
 elseif value:IsA("StringValue") then
-if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
-value:GetPropertyChangedSignal("Value"):Connect(function()
+value.Changed:Connect(function()
 if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
 end)
+if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
+elseif value:IsA("IntValue") or value:IsA("NumberValue") then
+value.Changed:Connect(function()
+if value.Value > 0 then value.Value = 0 end
+end)
+if value.Value > 0 then value.Value = 0 end
 end
 end
 
-local function inspectValues(instance)
-local markers = {"c\104\101\97t", "b\97n", "d\101t\101ct", "fl\97g", "v\105ol\97tion", "r\101port", "s\97nction", "pen\97lty"}
+local function scanForFlags(instance)
 for _, child in ipairs(instance:GetChildren()) do
-if child:IsA("BoolValue") or child:IsA("StringValue") then
 local name = child.Name:lower()
-for _, m in ipairs(markers) do
-if name:find(m) then
+for obfTag, _ in pairs(FLAG_BLACKLIST) do
+local tag = deobfuscate(obfTag)
+if name:find(tag) then
 cleanValue(child)
 break
 end
 end
+if child:IsA("StringValue") and isSensitive(child.Value) then
+cleanValue(child)
 end
-inspectValues(child)
+scanForFlags(child)
 end
 end
 
-local containers = {ReplicatedStorage, LocalPlayer, Workspace, CoreGui}
+local containers = {ReplicatedStorage, LocalPlayer, Workspace, CoreGui, game:GetService("Lighting")}
 for _, cont in ipairs(containers) do
-inspectValues(cont)
+scanForFlags(cont)
 cont.ChildAdded:Connect(function(child)
-task.wait(0.2)
-inspectValues(child)
+task.wait(0.1 + math.random() * 0.2)
+scanForFlags(child)
 end)
 end
 
--- 5. VELOCITY & CFRAME SMOOTHING
-local function motionFilter(char)
+-- =============================================
+-- 5. VELOCITY SMOOTHING: Physics-Aware
+-- =============================================
+local function applyPhysicsNoise(char)
 local hrp = char:FindFirstChild("HumanoidRootPart")
 if not hrp then return end
-RunService.Heartbeat:Connect(function(delta)
+
+local lastVelocity = hrp.AssemblyLinearVelocity
+local lastPosition = hrp.Position
+local lastTime = tick()
+
+RunService.Heartbeat:Connect(function(deltaTime)
 if not hrp.Parent then return end
-local current = hrp.AssemblyLinearVelocity
-local maxNormal = 80
-if current.Magnitude > maxNormal then
-local scale = maxNormal / current.Magnitude
-hrp.AssemblyLinearVelocity = current * scale
+
+local currentVelocity = hrp.AssemblyLinearVelocity
+local currentPosition = hrp.Position
+local currentTime = tick()
+local timeDiff = currentTime - lastTime
+
+local maxSpeed = 80 + math.sin(currentTime * 2) * 5
+if currentVelocity.Magnitude > maxSpeed then
+hrp.AssemblyLinearVelocity = currentVelocity.Unit * maxSpeed
 end
+
+local acceleration = (currentVelocity - lastVelocity) / timeDiff
+local jitterScale = 0.05 + (acceleration.Magnitude / 100)
 local jitter = Vector3.new(
-(math.random() - 0.5) * 0.2,
-(math.random() - 0.5) * 0.2,
-(math.random() - 0.5) * 0.2
+(math.random() - 0.5) * jitterScale,
+(math.random() - 0.5) * jitterScale * 0.2,
+(math.random() - 0.5) * jitterScale
 )
 hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity + jitter
--- Subtle human-like acceleration fluctuation
-local accelNoise = Vector3.new(
-(math.random() - 0.5) * 0.35,
-(math.random() - 0.5) * 0.12,
-(math.random() - 0.5) * 0.35
-)
-local vel = hrp.AssemblyLinearVelocity
-if vel.Magnitude > 2 then
-local clamped = Vector3.new(
-math.clamp(vel.X + accelNoise.X, -maxNormal, maxNormal),
-math.clamp(vel.Y + accelNoise.Y, -maxNormal, maxNormal),
-math.clamp(vel.Z + accelNoise.Z, -maxNormal, maxNormal)
-)
-hrp.AssemblyLinearVelocity = clamped
-end
-end)
-local oldPos = hrp.Position
-hrp:GetPropertyChangedSignal("CFrame"):Connect(function()
-local newPos = hrp.Position
-local dist = (newPos - oldPos).Magnitude
-if dist > 30 then
-task.spawn(function()
-local mid = oldPos:Lerp(newPos, 0.5)
-hrp.CFrame = CFrame.new(mid)
+
+local distance = (currentPosition - lastPosition).Magnitude
+if distance > 20 and timeDiff < 0.1 then
+local midPoint = lastPosition:Lerp(currentPosition, 0.5)
+hrp.CFrame = CFrame.new(midPoint, hrp.CFrame.LookVector)
 task.wait(0.01)
-hrp.CFrame = CFrame.new(newPos)
+hrp.CFrame = CFrame.new(currentPosition, hrp.CFrame.LookVector)
+end
+
+lastVelocity = currentVelocity
+lastPosition = currentPosition
+lastTime = currentTime
 end)
 end
-oldPos = newPos
-end)
-end
 
-local function onCharacterAdded(char)
-motionFilter(char)
-inspectValues(char)
-end
-
-if LocalPlayer.Character then onCharacterAdded(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
-
--- 6. REQUIRE HOOK FOR MODULE PROTECTION
-local oldRequire = game.Require
-game.Require = function(module)
-local result = oldRequire(module)
-if type(result) == "table" then
-for k, v in pairs(result) do
-if type(k) == "string" and (k:lower():find("cheat") or k:lower():find("ban") or k:lower():find("detect")) then
-if type(v) == "boolean" then result[k] = false
-elseif type(v) == "number" and v > 0 then result[k] = 0 end
-end
-end
-local mt = getmetatable(result)
-if mt and mt.__index then
-local oldIndex = mt.__index
-mt.__index = function(t, key)
-if type(key) == "string" and (key:lower():find("cheat") or key:lower():find("ban") or key:lower():find("detect")) then
-return false
-end
-return oldIndex(t, key)
-end
-end
-end
-return result
-end
-
--- 7. SUPPRESS LOGGING
-local oldPrint = print
-print = function(...)
-local args = {...}
-for _, msg in ipairs(args) do
-if type(msg) == "string" then
-local lower = msg:lower()
-if lower:find("cheat") or lower:find("ban") or lower:find("hack") or lower:find("exploit") then
-return
-end
-end
-end
-oldPrint(...)
-end
-
-local oldWarn = warn
-warn = function(...)
-local args = {...}
-for _, msg in ipairs(args) do
-if type(msg) == "string" then
-local lower = msg:lower()
-if lower:find("cheat") or lower:find("ban") or lower:find("hack") or lower:find("exploit") then
-return
-end
-end
-end
-oldWarn(...)
-end
-
--- 8. PERIODIC REINFORCEMENT
-task.spawn(function()
-while true do
-task.wait(3 + math.random() * 6)
-for _, cont in ipairs(containers) do inspectValues(cont) end
-syncPing()
-end
-end)
-
--- 9. (findAndBlockRemote removed – universal jitter applied via wrapEvent)
-
--- 10. CLAMP POSITION TO FIELD
-local function clampPosition(char)
+-- =============================================
+-- 6. POSITION CLAMPING: Natural Movement
+-- =============================================
+local function clampToField(char)
 local hrp = char:FindFirstChild("HumanoidRootPart")
 if not hrp then return end
+
 local models = Workspace:FindFirstChild("Models")
 if not models then return end
 local field = models:FindFirstChild("Field")
 if not field then return end
 local ground = field:FindFirstChild("Ground")
 if not ground then return end
-local pos = hrp.Position
+
 local center = ground.Position
-local halfX = 75
-local halfZ = 175
-local jitter = 0.3 + math.random() * 0.5
-local newPos = Vector3.new(
-math.clamp(pos.X + (math.random()-0.5)*jitter, center.X - halfX, center.X + halfX),
-pos.Y + (math.random()-0.5)*0.2,
-math.clamp(pos.Z + (math.random()-0.5)*jitter, center.Z - halfZ, center.Z + halfZ)
-)
-if (newPos - pos).Magnitude > 0.5 then
-hrp.Position = newPos
-end
-end
+local halfX = 75 + math.sin(tick() * 0.1) * 2
+local halfZ = 175 + math.cos(tick() * 0.1) * 2
 
 RunService.Heartbeat:Connect(function()
-local char = LocalPlayer.Character
-if char then clampPosition(char) end
+if not hrp.Parent then return end
+local pos = hrp.Position
+local newX = math.clamp(pos.X + (math.random() - 0.5) * 0.3, center.X - halfX, center.X + halfX)
+local newZ = math.clamp(pos.Z + (math.random() - 0.5) * 0.3, center.Z - halfZ, center.Z + halfZ)
+local newPos = Vector3.new(newX, pos.Y, newZ)
+
+if (newPos - pos).Magnitude > 0.1 then
+hrp.Position = newPos
+end
+end)
+end
+
+-- =============================================
+-- 7. REQUIRE HOOK: Disabled
+-- Roblox exposes require as a global function, not as game.Require, and engine
+-- members cannot be replaced per DataModel instance.
+-- =============================================
+
+-- 8. LOGGING SUPPRESSION: Dynamic
+-- =============================================
+local ORIGINAL_PRINT = print
+local ORIGINAL_WARN = warn
+
+print = function(...)
+local args = {...}
+for _, v in ipairs(args) do
+if isSensitive(tostring(v)) then
+return
+end
+end
+return ORIGINAL_PRINT(...)
+end
+
+warn = function(...)
+local args = {...}
+for _, v in ipairs(args) do
+if isSensitive(tostring(v)) then
+return
+end
+end
+return ORIGINAL_WARN(...)
+end
+
+-- =============================================
+-- 9. PERIODIC REINFORCEMENT: Adaptive
+-- =============================================
+local reinforcementIntervals = {2, 3, 4, 5, 6, 7, 8, 9}
+local lastReinforcement = tick()
+
+task.spawn(function()
+while true do
+local waitTime = reinforcementIntervals[math.random(1, #reinforcementIntervals)]
+        task.wait(waitTime + (math.random() * 3 - 1.5))
+
+for _, cont in ipairs(containers) do
+scanForFlags(cont)
+end
+
+syncPing()
+checkEnvironment()
+end
 end)
 
-dbg("bypass loaded")
+-- =============================================
+-- 10. ANTI-DEBUGGING: Multi-Layered
+-- =============================================
+local function antiDebug()
+if game:GetService("CoreGui"):FindFirstChild("Synapse") then
+error("Debugger detected", 0)
+end
+if game:GetService("CoreGui"):FindFirstChild("JJSploit") then
+error("Debugger detected", 0)
+end
+-- debug.getupvalue being available is normal and is not a debugger signal
+if game:GetService("StarterGui"):FindFirstChild("CommandBar") then
+error("Debugger detected", 0)
+end
 end
 
--- Execute with error handling.
-local ok, err = pcall(main)
-if not ok then
-dbg("bypass load error: " .. tostring(err))
-if type(err) == "string" and (err:find("GetValue") or err:find("RunningAverageItemInt")) then
-dbg("Not in Football Fusion – some stats spoofing skipped.")
+task.spawn(function()
+while true do
+task.wait(5 + math.random() * 10)
+antiDebug()
+end
+end)
+
+-- =============================================
+-- 11. SELF-DESTRUCT ON TAMPER
+-- =============================================
+local script = script or (function()
+local s = Instance.new("Script")
+s.Name = HttpService:GenerateGUID(false)
+s.Parent = CoreGui
+return s
+end)()
+
+local function protectScript()
+local originalParent = script.Parent
+local originalName = script.Name
+
+if script.Parent ~= originalParent then
+script:Destroy()
+error("Script tampered with", 0)
+end
+
+if script.Name ~= originalName then
+script:Destroy()
+error("Script tampered with", 0)
 end
 end
 
+task.spawn(function()
+while true do
+task.wait(2 + math.random() * 3)
+protectScript()
+end
+end)
+
+-- =============================================
+-- EXECUTE
+-- =============================================
+local function onCharacterAdded(char)
+applyPhysicsNoise(char)
+clampToField(char)
+end
+
+if LocalPlayer.Character then
+onCharacterAdded(LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+
+syncPing()
+for _, cont in ipairs(containers) do
+scanForFlags(cont)
+end
+
+-- =============================================
+-- LOAD COMPLETE
+-- =============================================
+if DEBUG_MODE then
+print("[Lyra Bypass v9.0] Loaded successfully")
+end
 -- Lyra UI redesign
 -- Mobile-first interface shell
 
@@ -3432,7 +3489,7 @@ local attach1 = Instance.new('Attachment', workspace.Terrain)
 local beam = Instance.new('Beam')
 beam.Attachment0 = attach0
 beam.Attachment1 = attach1
-beam.Segments = 7500
+beam.Segments = 25
 beam.Width0 = 1.6
 beam.Width1 = 1.6
 beam.FaceCamera = true
@@ -3478,6 +3535,8 @@ container.BackgroundColor3 = Color3.fromRGB(218, 145, 229)
 container.BackgroundTransparency = 0.04
 container.GroupTransparency = 1
 container.Visible = false
+container.Active = true
+container.ClipsDescendants = false
 container.Parent = sg
 
 local containerCorner = Instance.new('UICorner', container)
@@ -3523,14 +3582,80 @@ local updateHUDVisibility = function(show)
 end
 
 local containerScale = Instance.new('UIScale', container)
+local hudWasDragged = false
 
 local updateScale = function()
     local vp = camera.ViewportSize
     local baseWidth = 720
-    local scale = math.min((vp.X - 20) / baseWidth, 1.05)
-    containerScale.Scale = math.clamp(scale, 0.48, 1.05)
-    container.Position = UDim2.new(0.5, 0, 0, (vp.X < 700) and 10 or 18)
+    local sideMargin = userInputService.TouchEnabled and 12 or 20
+    local scale = math.min((vp.X - sideMargin) / baseWidth, 1.05)
+    containerScale.Scale = math.clamp(scale, 0.46, 1.05)
+
+    -- Respect phone safe space and do not reset a position chosen by the user.
+    if not hudWasDragged then
+        container.Position = UDim2.new(0.5, 0, 0, (vp.X < 700) and 12 or 18)
+    end
 end
+
+-- Mouse and touch dragging for the complete QB card strip.
+local draggingHUD = false
+local hudDragInput = nil
+local hudDragStart = nil
+local hudStartPosition = nil
+local hudMoved = false
+
+container.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        draggingHUD = true
+        hudMoved = false
+        hudDragStart = input.Position
+        hudStartPosition = container.Position
+    end
+end)
+
+container.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        hudDragInput = input
+    end
+end)
+
+userInputService.InputChanged:Connect(function(input)
+    if draggingHUD and input == hudDragInput and hudDragStart and hudStartPosition then
+        local delta = input.Position - hudDragStart
+        if delta.Magnitude >= 6 then
+            hudMoved = true
+            hudWasDragged = true
+        end
+        if hudMoved then
+            local vp = camera.ViewportSize
+            local scaledWidth = container.AbsoluteSize.X
+            local scaledHeight = container.AbsoluteSize.Y
+            local centerX = math.clamp(
+                (vp.X * hudStartPosition.X.Scale) + hudStartPosition.X.Offset + delta.X,
+                scaledWidth / 2,
+                vp.X - (scaledWidth / 2)
+            )
+            local topY = math.clamp(
+                (vp.Y * hudStartPosition.Y.Scale) + hudStartPosition.Y.Offset + delta.Y,
+                4,
+                math.max(4, vp.Y - scaledHeight - 4)
+            )
+            container.Position = UDim2.fromOffset(centerX, topY)
+        end
+    end
+end)
+
+userInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        draggingHUD = false
+        hudDragInput = nil
+        hudDragStart = nil
+        hudStartPosition = nil
+    end
+end)
 
 camera:GetPropertyChangedSignal('ViewportSize'):Connect(updateScale)
 updateScale()
@@ -3711,6 +3836,100 @@ createCard('Throw Type')
 createCard('Player')
 createCard('Airtime')
 createCard('Power')
+
+-- Direct throw-style controls for touch users (also clickable on desktop).
+task.spawn(function()
+    local modeBar = Instance.new('Frame')
+    modeBar.Name = 'ThrowModeButtons'
+    modeBar.AnchorPoint = Vector2.new(0.5, 0)
+    modeBar.Position = UDim2.new(0.5, 0, 1, 8)
+    modeBar.Size = UDim2.new(0, userInputService.TouchEnabled and 560 or 350, 0, userInputService.TouchEnabled and 78 or 40)
+    modeBar.BackgroundColor3 = Color3.fromRGB(218, 145, 229)
+    modeBar.BackgroundTransparency = 0.06
+    modeBar.BorderSizePixel = 0
+    modeBar.Active = true
+    modeBar.Parent = container
+
+    local modeBarCorner = Instance.new('UICorner', modeBar)
+    modeBarCorner.CornerRadius = UDim.new(0, 18)
+
+    local modeBarStroke = Instance.new('UIStroke', modeBar)
+    modeBarStroke.Color = Color3.fromRGB(180, 72, 190)
+    modeBarStroke.Thickness = 1.2
+    modeBarStroke.Transparency = 0.2
+
+    local modeLayout = Instance.new('UIListLayout', modeBar)
+    modeLayout.FillDirection = Enum.FillDirection.Horizontal
+    modeLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    modeLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    modeLayout.Padding = UDim.new(0, userInputService.TouchEnabled and 7 or 5)
+
+    local modeButtons = {}
+
+    local function refreshModeButtons()
+        for index, button in ipairs(modeButtons) do
+            local selected = index == modeIndex
+            button.BackgroundColor3 = selected and Color3.fromRGB(255, 95, 210) or Color3.fromRGB(235, 178, 239)
+            button.TextColor3 = selected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(35, 15, 38)
+            local stroke = button:FindFirstChildOfClass('UIStroke')
+            if stroke then
+                stroke.Color = selected and Color3.fromRGB(145, 45, 170) or Color3.fromRGB(190, 110, 200)
+                stroke.Transparency = selected and 0.05 or 0.35
+            end
+        end
+    end
+
+    for index, modeName in ipairs(ModeOrder) do
+        local modeButton = Instance.new('TextButton')
+        modeButton.Name = modeName .. 'Button'
+        modeButton.Size = UDim2.new(0, userInputService.TouchEnabled and 100 or 62, 0, userInputService.TouchEnabled and 58 or 30)
+        modeButton.BackgroundColor3 = Color3.fromRGB(235, 178, 239)
+        modeButton.BorderSizePixel = 0
+        modeButton.AutoButtonColor = false
+        modeButton.Font = Enum.Font.GothamBold
+        modeButton.Text = modeName
+        modeButton.TextColor3 = Color3.fromRGB(35, 15, 38)
+        modeButton.TextSize = userInputService.TouchEnabled and 18 or 11
+        modeButton.Parent = modeBar
+
+        local buttonCorner = Instance.new('UICorner', modeButton)
+        buttonCorner.CornerRadius = UDim.new(0, 13)
+
+        local buttonStroke = Instance.new('UIStroke', modeButton)
+        buttonStroke.Color = Color3.fromRGB(190, 110, 200)
+        buttonStroke.Transparency = 0.35
+
+        modeButton.MouseButton1Click:Connect(function()
+            -- A direct choice takes priority over automatic mode selection.
+            if autoSelectThrowMode and autoSelectThrowMode.Set then
+                autoSelectThrowMode:Set(false)
+            elseif autoSelectThrowMode then
+                autoSelectThrowMode.Value = false
+            end
+            modeIndex = index
+            refreshModeButtons()
+            tweenService:Create(modeButton, TweenInfo.new(0.08), {BackgroundTransparency = 0.25}):Play()
+            task.delay(0.09, function()
+                if modeButton and modeButton.Parent then
+                    tweenService:Create(modeButton, TweenInfo.new(0.1), {BackgroundTransparency = 0}):Play()
+                end
+            end)
+        end)
+
+        table.insert(modeButtons, modeButton)
+    end
+
+    refreshModeButtons()
+
+    -- Keep button highlighting synced when automatic mode selection changes it.
+    local lastDisplayedMode = modeIndex
+    runService.RenderStepped:Connect(function()
+        if lastDisplayedMode ~= modeIndex then
+            lastDisplayedMode = modeIndex
+            refreshModeButtons()
+        end
+    end)
+end)
 
 local getActiveBots = function()
     local bots = {}
@@ -4150,6 +4369,8 @@ local solveKinematics = function(origin, targetPos, gravityMag)
     end
     
     local angleDeg = tonumber(math.deg(angleRad)) or 45
+    angleDeg = angleDeg + (math.random() - 0.5) * 4
+    v0 = v0 * (1 + (math.random() - 0.5) * 0.04)
     return v0, angleDeg
 end
 
@@ -4218,6 +4439,8 @@ local autoAim = function(targetHRP)
         ['stationary'] = 0.0
     }
     local rMult = tonumber(routeMultipliers[routeStr]) or 1.0
+    local routeMultRand = 1 + (math.random() - 0.5) * 0.15
+    rMult = rMult * routeMultRand
     
     local dirUnit = moveDir.Magnitude > 0.01 and moveDir.Unit or Vector3.zero
     
@@ -4668,7 +4891,7 @@ workspace.ChildAdded:Connect(function(v)
             local tBeam = Instance.new('Beam')
             tBeam.Attachment0 = tAttach0
             tBeam.Attachment1 = tAttach1
-            tBeam.Segments = 7500
+            tBeam.Segments = 25
             tBeam.Width0 = 1.45
             tBeam.Width1 = 1.45
             tBeam.FaceCamera = true
@@ -6041,7 +6264,7 @@ workspace.ChildAdded:Connect(function(v)
     raycastParams.FilterDescendantsInstances = {v}
     raycastParams.IgnoreWater = true
 
-    for _ = 1, 300 do
+    for _ = 1, 80 do
         local nextPosition = position + velocity * deltaTime + 0.5 * gravity * deltaTime ^ 2
         velocity += gravity * deltaTime
 
@@ -6194,8 +6417,8 @@ end)
     local positions = {}
     local parts = {}
 
-    local dt = 0.05
-    local maxTime = 8
+    local dt = 0.08
+    local maxTime = 3.5
 
     local lastPos = pos
     local spawnY = pos.Y
@@ -7195,6 +7418,7 @@ smoothReplay = MiscTab:CreateToggle({
 	})
     
 if not isPractice then
+	task.spawn(function()
 
 	local player = game:GetService('Players').LocalPlayer
 	local replicatedStorage = game:GetService('ReplicatedStorage')
@@ -7475,6 +7699,7 @@ if not isPractice then
 
 			replay(...)
 		end
-	end)
+		end)
 
+	end)
 end
