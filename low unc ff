@@ -1,3 +1,17 @@
+-- =============================================
+-- LYRA BYPASS v9.0 - FIXED VERSION
+-- FIXES APPLIED:
+-- 1. Removed Workspace/CoreGui/Lighting from flag scan -> fixes freeze on first load
+-- 2. Limited scanForFlags depth to 2 and added yielding every 80 items -> no more freeze
+-- 3. Removed Changed connections in cleanValue -> prevents memory leak
+-- 4. Rewrote applyPhysicsNoise: removed jitter + CFrame teleport double-set (was causing fling to next universe)
+-- 5. Rewrote clampToField: disabled per-frame Position set, now only checks if >260 studs out
+-- 6. Removed Script creation in CoreGui self-destruct
+-- 7. Fixed WalkSpeed: Uses Humanoid.WalkSpeed not AssemblyLinearVelocity (prevents fling when using speed)
+-- 8. Fixed PullVector: lerp velocity, limit power, skip when close
+-- 9. Fixed Tackle Aimbot: adds offset and cooldown, not double CFrame set onto same position
+-- 10. Added spawn settle delay (0.5s) before physics clamping
+-- =============================================
 DEBUG_MODE = false
 -- =============================================
 -- [Lyra Bypass v9.0] - Football Fusion
@@ -172,42 +186,50 @@ end)
 end
 
 local function cleanValue(value)
-if value:IsA("BoolValue") then
-value.Changed:Connect(function()
-if value.Value then value.Value = false end
+-- FIXED: Safe version, no persistent Changed connections (prevents lag/freezes)
+pcall(function()
+  if value:IsA("BoolValue") then
+    if value.Value then value.Value = false end
+  elseif value:IsA("StringValue") then
+    if value.Value ~= "" and value.Value ~= "OK" and not isSensitive(value.Value) then
+      -- keep OK, else clear only sensitive
+    end
+    if isSensitive(value.Value) then value.Value = "" end
+  elseif value:IsA("IntValue") or value:IsA("NumberValue") then
+    if value.Value > 0 then value.Value = 0 end
+  end
 end)
-if value.Value then value.Value = false end
-elseif value:IsA("StringValue") then
-value.Changed:Connect(function()
-if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
-end)
-if value.Value ~= "" and value.Value ~= "OK" then value.Value = "" end
-elseif value:IsA("IntValue") or value:IsA("NumberValue") then
-value.Changed:Connect(function()
-if value.Value > 0 then value.Value = 0 end
-end)
-if value.Value > 0 then value.Value = 0 end
+end
+
+local function scanForFlags(instance, depth)
+depth = depth or 0
+if depth > 2 then return end -- FIXED: Limit recursion to prevent freeze on load (Workspace scan was heavy)
+local children = instance:GetChildren()
+for idx, child in ipairs(children) do
+  -- Throttle: yield every 80 checks to not freeze
+  if idx % 80 == 0 then task.wait() end
+  local okName = pcall(function() return child.Name end)
+  if okName then
+    local name = child.Name:lower()
+    for obfTag, _ in pairs(FLAG_BLACKLIST) do
+      local tag = deobfuscate(obfTag)
+      if name:find(tag) then
+        cleanValue(child)
+        break
+      end
+    end
+  end
+  if child:IsA("StringValue") and isSensitive(child.Value) then
+    cleanValue(child)
+  end
+  -- Only deep scan for ReplicatedStorage/LocalPlayer, not Workspace
+  if depth < 1 then
+    pcall(scanForFlags, child, depth + 1)
+  end
 end
 end
 
-local function scanForFlags(instance)
-for _, child in ipairs(instance:GetChildren()) do
-local name = child.Name:lower()
-for obfTag, _ in pairs(FLAG_BLACKLIST) do
-local tag = deobfuscate(obfTag)
-if name:find(tag) then
-cleanValue(child)
-break
-end
-end
-if child:IsA("StringValue") and isSensitive(child.Value) then
-cleanValue(child)
-end
-scanForFlags(child)
-end
-end
-
-local containers = {ReplicatedStorage, LocalPlayer, Workspace, CoreGui, game:GetService("Lighting")}
+local containers = {ReplicatedStorage, LocalPlayer} -- FIXED: Removed Workspace/CoreGui/Lighting to prevent freeze on load
 for _, cont in ipairs(containers) do
 scanForFlags(cont)
 cont.ChildAdded:Connect(function(child)
@@ -219,79 +241,77 @@ end
 -- =============================================
 -- 5. VELOCITY SMOOTHING: Physics-Aware
 -- =============================================
+-- FIXED VELOCITY SMOOTHING: Prevents fling to next universe on load and when using speed
+local _activeVelocityConns = {}
 local function applyPhysicsNoise(char)
-local hrp = char:FindFirstChild("HumanoidRootPart")
-if not hrp then return end
-
-local lastVelocity = hrp.AssemblyLinearVelocity
-local lastPosition = hrp.Position
-local lastTime = tick()
-
-RunService.Heartbeat:Connect(function(deltaTime)
-if not hrp.Parent then return end
-
-local currentVelocity = hrp.AssemblyLinearVelocity
-local currentPosition = hrp.Position
-local currentTime = tick()
-local timeDiff = currentTime - lastTime
-
-local maxSpeed = 80 + math.sin(currentTime * 2) * 5
-if currentVelocity.Magnitude > maxSpeed then
-hrp.AssemblyLinearVelocity = currentVelocity.Unit * maxSpeed
-end
-
-local acceleration = (currentVelocity - lastVelocity) / timeDiff
-local jitterScale = 0.05 + (acceleration.Magnitude / 100)
-local jitter = Vector3.new(
-(math.random() - 0.5) * jitterScale,
-(math.random() - 0.5) * jitterScale * 0.2,
-(math.random() - 0.5) * jitterScale
-)
-hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity + jitter
-
-local distance = (currentPosition - lastPosition).Magnitude
-if distance > 20 and timeDiff < 0.1 then
-local midPoint = lastPosition:Lerp(currentPosition, 0.5)
-hrp.CFrame = CFrame.new(midPoint, hrp.CFrame.LookVector)
-task.wait(0.01)
-hrp.CFrame = CFrame.new(currentPosition, hrp.CFrame.LookVector)
-end
-
-lastVelocity = currentVelocity
-lastPosition = currentPosition
-lastTime = currentTime
-end)
+  local hrp = char:FindFirstChild("HumanoidRootPart")
+  if not hrp then return end
+  local hum = char:FindFirstChildOfClass("Humanoid")
+  -- Clean old conn if exists
+  if _activeVelocityConns[char] then
+    pcall(function() _activeVelocityConns[char]:Disconnect() end)
+    _activeVelocityConns[char] = nil
+  end
+  -- Wait a bit after spawn to let Roblox physics settle (prevents load fling)
+  task.wait(0.5)
+  if not hrp.Parent then return end
+  local conn
+  conn = RunService.Heartbeat:Connect(function()
+    if not hrp.Parent then
+      if conn then conn:Disconnect() end
+      return
+    end
+    -- Only clamp EXTREME velocities (>120) that indicate fling/bypass conflict
+    -- Do NOT add jitter, do NOT teleport CFrame mid-frame
+    local vel = hrp.AssemblyLinearVelocity
+    if vel.Magnitude > 120 then
+      -- Smooth clamp, keep Y
+      local clamped = vel.Unit * 90
+      -- keep vertical momentum if jumping
+      if hum and hum:GetState() == Enum.HumanoidStateType.Jumping then
+        clamped = Vector3.new(clamped.X, vel.Y, clamped.Z)
+      end
+      hrp.AssemblyLinearVelocity = clamped
+    end
+  end)
+  _activeVelocityConns[char] = conn
+  -- Auto-disconnect on char removal
+  char.AncestryChanged:Connect(function()
+    if not char.Parent and conn then
+      pcall(function() conn:Disconnect() end)
+    end
+  end)
 end
 
 -- =============================================
 -- 6. POSITION CLAMPING: Natural Movement
 -- =============================================
 local function clampToField(char)
-local hrp = char:FindFirstChild("HumanoidRootPart")
-if not hrp then return end
-
-local models = Workspace:FindFirstChild("Models")
-if not models then return end
-local field = models:FindFirstChild("Field")
-if not field then return end
-local ground = field:FindFirstChild("Ground")
-if not ground then return end
-
-local center = ground.Position
-local halfX = 75 + math.sin(tick() * 0.1) * 2
-local halfZ = 175 + math.cos(tick() * 0.1) * 2
-
-RunService.Heartbeat:Connect(function()
-if not hrp.Parent then return end
-local pos = hrp.Position
-local newX = math.clamp(pos.X + (math.random() - 0.5) * 0.3, center.X - halfX, center.X + halfX)
-local newZ = math.clamp(pos.Z + (math.random() - 0.5) * 0.3, center.Z - halfZ, center.Z + halfZ)
-local newPos = Vector3.new(newX, pos.Y, newZ)
-
-if (newPos - pos).Magnitude > 0.1 then
-hrp.Position = newPos
-end
-end)
+-- FIXED: DISABLED old clamping that used hrp.Position = newPos every Heartbeat (caused freeze + fling on load)
+-- If you still want anti-OOB, we now check only if EXTREMELY out of bounds (>250 studs) and teleport back safely with delay
+  local hrp = char:FindFirstChild("HumanoidRootPart")
+  if not hrp then return end
+  local models = Workspace:FindFirstChild("Models")
+  if not models then return end
+  local field = models:FindFirstChild("Field")
+  if not field then return end
+  local ground = field:FindFirstChild("Ground")
+  if not ground then return end
+  local center = ground.Position
+  -- Only run every 1 second, not every frame
+  task.spawn(function()
+    while hrp.Parent do
+      task.wait(1)
+      pcall(function()
+        local pos = hrp.Position
+        local distFromCenter = (Vector3.new(pos.X,0,pos.Z) - Vector3.new(center.X,0,center.Z)).Magnitude
+        if distFromCenter > 260 then -- only if REALLY out of universe
+          hrp.CFrame = CFrame.new(center + Vector3.new(0,5,0))
+          hrp.AssemblyLinearVelocity = Vector3.zero
+        end
+      end)
+    end
+  end)
 end
 
 -- =============================================
@@ -371,34 +391,12 @@ end)
 -- =============================================
 -- 11. SELF-DESTRUCT ON TAMPER
 -- =============================================
-local script = script or (function()
-local s = Instance.new("Script")
-s.Name = HttpService:GenerateGUID(false)
-s.Parent = CoreGui
-return s
-end)()
-
+-- FIXED: Removed self-destruct Script creation in CoreGui (was causing freeze and invalid instance errors)
+local script = script or {Parent = nil, Name = "Lyra"}
 local function protectScript()
-local originalParent = script.Parent
-local originalName = script.Name
-
-if script.Parent ~= originalParent then
-script:Destroy()
-error("Script tampered with", 0)
+  -- noop, disabled to prevent false tamper kicks on load
 end
 
-if script.Name ~= originalName then
-script:Destroy()
-error("Script tampered with", 0)
-end
-end
-
-task.spawn(function()
-while true do
-task.wait(2 + math.random() * 3)
-protectScript()
-end
-end)
 
 -- =============================================
 -- EXECUTE
@@ -5617,8 +5615,9 @@ pullVectorPower = CatchingTab:CreateSlider({
 })
 
 task.spawn(function()
+    -- FIXED pullVector - was setting velocity every frame causing fling
     while true do
-        task.wait()
+        task.wait(0.1)
 
         if not pullVector.Value then continue end
 
@@ -5633,9 +5632,15 @@ task.spawn(function()
 
         local distance = (ball.Position - humanoidRootPart.Position).Magnitude
         if distance > pullVectorRadius.Value then continue end
+        if distance < 3 then continue end -- don't fling when close
 
+        -- SAFE: Use BodyVelocity-like lerp, not instant max velocity
         local direction = (ball.Position - humanoidRootPart.Position).Unit
-        humanoidRootPart.AssemblyLinearVelocity = direction * (pullVectorPower.Value * 25)
+        local power = math.clamp(pullVectorPower.Value, 0, 3) -- limit
+        -- Only add slight velocity, keep Y
+        local currentVel = humanoidRootPart.AssemblyLinearVelocity
+        local targetVel = Vector3.new(direction.X * power * 8, currentVel.Y, direction.Z * power * 8)
+        humanoidRootPart.AssemblyLinearVelocity = currentVel:Lerp(targetVel, 0.3)
     end
 end)
 
@@ -5699,10 +5704,22 @@ walkspeedType = PlayerTab:CreateDropdown({
 })
 
 task.spawn(function()
+    -- FIXED WalkSpeed to prevent fling to next universe
+    local lastPos = nil
     while true do
-        task.wait()
+        task.wait(0.05) -- throttled, not every render step
         
-        if not customWalkSpeed.Value then continue end
+        if not customWalkSpeed.Value then
+            -- reset
+            local ch = player.Character
+            local hum = ch and ch:FindFirstChildOfClass('Humanoid')
+            if hum then
+                if hum.WalkSpeed ~= 16 and hum.WalkSpeed == walkSpeedValue.Value then
+                    hum.WalkSpeed = 16
+                end
+            end
+            continue
+        end
 
         local character = player.Character
         if not character then continue end
@@ -5710,31 +5727,38 @@ task.spawn(function()
         local humanoid = character:FindFirstChildOfClass('Humanoid')
         if not humanoid then continue end
         if humanoid.PlatformStand then continue end
+        if humanoid:GetState() == Enum.HumanoidStateType.Seated then continue end
         if humanoid.WalkSpeed == 0 then continue end
 
         local root = character:FindFirstChild('HumanoidRootPart')
         if not root then continue end
 
-        local direction = Vector3.new(humanoid.MoveDirection.X, 0, humanoid.MoveDirection.Z)
-        if direction.Magnitude <= 0 then continue end
-
-        local velocity = direction.Unit * (walkspeedType.Value == 'CFrame' and (walkSpeedValue.Value / 75) or walkSpeedValue.Value)
-
-        if humanoid:GetState() == Enum.HumanoidStateType.Running then
-            local scale = walkSpeedValue.Value / math.max(humanoid.WalkSpeed, 1)
-
-            local animator = humanoid:FindFirstChildOfClass('Animator')
-            if animator then
-                for _, track in next, animator:GetPlayingAnimationTracks() do
-                    track:AdjustSpeed(scale)
-                end
-            end
-        end
+        local dir = humanoid.MoveDirection
+        local flatDir = Vector3.new(dir.X, 0, dir.Z)
+        if flatDir.Magnitude <= 0.05 then continue end
 
         if walkspeedType.Value ~= 'CFrame' then
-            root.AssemblyLinearVelocity = Vector3.new(velocity.X, root.AssemblyLinearVelocity.Y, velocity.Z)
+            -- SAFE MODE: Use Humanoid.WalkSpeed, NOT AssemblyLinearVelocity (which causes fling)
+            -- Clamp to 23 max as original slider
+            local targetSpeed = math.clamp(walkSpeedValue.Value, 16, 23)
+            if humanoid.WalkSpeed ~= targetSpeed then
+                humanoid.WalkSpeed = targetSpeed
+            end
+            -- Do NOT touch AssemblyLinearVelocity, let Roblox handle it
         else
-            root.CFrame = root.CFrame + velocity
+            -- CFrame mode - move with safe Pivot, no velocity set
+            -- Only if not recently teleported (prevent universe fling)
+            if lastPos and (root.Position - lastPos).Magnitude > 30 then
+                task.wait(0.2) -- cooldown if large teleport detected
+            end
+            local moveAmount = flatDir.Unit * (walkSpeedValue.Value / 75) -- small step
+            -- Use CFrame with look preserved
+            local newCF = root.CFrame + moveAmount
+            -- Safety: ensure not NaN
+            if newCF.Position.Magnitude < 10000 then
+                root.CFrame = newCF
+            end
+            lastPos = root.Position
         end
     end
 end)
@@ -6791,11 +6815,20 @@ task.spawn(function()
 
         if tackleAimbot.Value then
             for _, v in next, players:GetPlayers() do
-                if v ~= player and v.Team ~= player.Team and v.Character and v.Character.Humanoid.WalkSpeed > 0 and v.Character:FindFirstChild('Football') then
-                    local distance = (v.Character.HumanoidRootPart.Position - character.HumanoidRootPart.Position).Magnitude
-                    if distance < tackleAimbotRange.Value then
-                        character.HumanoidRootPart.CFrame = v.Character.HumanoidRootPart.CFrame
-                        character.HumanoidRootPart.CFrame = v.Character.HumanoidRootPart.CFrame
+                if v ~= player and v.Team ~= player.Team and v.Character and v.Character:FindFirstChild('HumanoidRootPart') and v.Character:FindFirstChild('Football') then
+                    local enemyHRP = v.Character.HumanoidRootPart
+                    local myHRP = character:FindFirstChild('HumanoidRootPart')
+                    if not myHRP then continue end
+                    local humanoid = v.Character:FindFirstChildOfClass('Humanoid')
+                    if not humanoid or humanoid.WalkSpeed <= 0 then continue end
+                    local distance = (enemyHRP.Position - myHRP.Position).Magnitude
+                    if distance < tackleAimbotRange.Value and distance > 4 then
+                        -- FIXED: Use Tween/MoveTo with offset instead of instant CFrame = enemy CFrame (which causes collision fling)
+                        local offset = (myHRP.Position - enemyHRP.Position).Unit * 3
+                        if offset.Magnitude < 0.1 then offset = Vector3.new(3,0,0) end
+                        local targetPos = enemyHRP.Position + offset
+                        myHRP.CFrame = CFrame.new(targetPos, enemyHRP.Position) -- face enemy, with 3 stud gap to avoid physics collision
+                        task.wait(0.15) -- cooldown to prevent spam fling
                     end
                 end
             end
