@@ -3099,65 +3099,96 @@ local function LoadQBAimbot()
     -- BEAM VISUAL ENGINE
     -- ═══════════════════════════════════════════════════════════════
     local BeamEngine = {
-        attach0 = Instance.new('Attachment', workspace.Terrain),
-        attach1 = Instance.new('Attachment', workspace.Terrain),
-        beam = Instance.new('Beam'),
-        posPart = Instance.new('Part'),
+        segments = {},
+        SEGMENT_COUNT = 40,
     }
 
     do
-        BeamEngine.beam.Attachment0 = BeamEngine.attach0
-        BeamEngine.beam.Attachment1 = BeamEngine.attach1
-        BeamEngine.beam.Segments = 7500
-        BeamEngine.beam.Width0 = 1
-        BeamEngine.beam.Width1 = 1
-        BeamEngine.beam.FaceCamera = true
-        BeamEngine.beam.Color = ColorSequence.new(Theme.Accent)
-        BeamEngine.beam.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 1),
-            NumberSequenceKeypoint.new(0.01, 0),
-            NumberSequenceKeypoint.new(1, 0)
-        })
-        BeamEngine.beam.Enabled = true
-        BeamEngine.beam.Parent = workspace.Terrain
+        for i = 1, BeamEngine.SEGMENT_COUNT do
+            local attach0 = Instance.new('Attachment', workspace.Terrain)
+            local attach1 = Instance.new('Attachment', workspace.Terrain)
 
-        RegisterVisualTheme(BeamEngine.beam, function()
-            BeamEngine.beam.Color = ColorSequence.new(Theme.Accent)
-        end)
+            local beam = Instance.new('Beam')
+            beam.Attachment0 = attach0
+            beam.Attachment1 = attach1
+            beam.Segments = 2
+            beam.Width0 = 0.8
+            beam.Width1 = 0.8
+            beam.FaceCamera = true
+            beam.Color = ColorSequence.new(Theme.Accent)
+            beam.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 0)
+            })
+            beam.LightEmission = 0.5
+            beam.Enabled = false
+            beam.Parent = workspace.Terrain
 
-        BeamEngine.posPart.Anchored = true
-        BeamEngine.posPart.CanCollide = false
-        BeamEngine.posPart.CastShadow = false
-        BeamEngine.posPart.Size = Vector3.new(3, 3, 3)
-        BeamEngine.posPart.Shape = Enum.PartType.Ball
-        BeamEngine.posPart.Material = Enum.Material.Neon
-        BeamEngine.posPart.Color = Theme.Accent
-        BeamEngine.posPart.Parent = workspace.Terrain
+            RegisterVisualTheme(beam, function()
+                beam.Color = ColorSequence.new(Theme.Accent)
+            end)
 
-        RegisterVisualTheme(BeamEngine.posPart, function()
-            BeamEngine.posPart.Color = Theme.Accent
-        end)
+            table.insert(BeamEngine.segments, {
+                attach0 = attach0,
+                attach1 = attach1,
+                beam = beam,
+            })
+        end
     end
 
     function BeamEngine.Update(startOrigin, drawDir, airtime)
-        BeamEngine.beam.Enabled = true
         local safeAirtime = math.max(tonumber(airtime) or 0.1, 0.1)
-        local curve0, curve1, cf1, cf2 = Kinematics.BeamProjectile(Vector3.new(0, -GRAVITY, 0), drawDir, startOrigin + (drawDir.Unit * 5), safeAirtime)
+        local g = Vector3.new(0, -GRAVITY, 0)
+        local v0 = drawDir
+        local x0 = startOrigin + (drawDir.Unit * 5)
+        local dt = safeAirtime / BeamEngine.SEGMENT_COUNT
+        local groundY = 4
 
-        BeamEngine.beam.CurveSize0 = curve0
-        BeamEngine.beam.CurveSize1 = curve1
-        BeamEngine.attach0.WorldCFrame = cf1
-        BeamEngine.attach1.WorldCFrame = cf2
-        BeamEngine.attach0.WorldPosition = Vector3.new(cf1.X, cf1.Y, cf1.Z)
-        BeamEngine.attach1.WorldPosition = Vector3.new(cf2.X, cf2.Y, cf2.Z)
-        BeamEngine.posPart.Position = Vector3.new(cf2.X, cf2.Y, cf2.Z)
+        local prevPos = x0
+        local landed = false
+        for i = 1, BeamEngine.SEGMENT_COUNT do
+            local seg = BeamEngine.segments[i]
+            if not seg then break end
+
+            if landed then
+                seg.beam.Enabled = false
+                seg.attach0.WorldPosition = Vector3.new(0, -9999, 0)
+                seg.attach1.WorldPosition = Vector3.new(0, -9999, 0)
+                continue
+            end
+
+            local t = i * dt
+            local pos = x0 + v0 * t + 0.5 * g * t * t
+
+            if pos.Y <= groundY then
+                local tPrev = (i - 1) * dt
+                local prevT = x0 + v0 * tPrev + 0.5 * g * tPrev * tPrev
+                local frac = 1
+                local diff = prevT.Y - pos.Y
+                if diff > 0.001 then
+                    frac = math.clamp((prevT.Y - groundY) / diff, 0, 1)
+                end
+                pos = prevT + (pos - prevT) * frac
+                pos = Vector3.new(pos.X, groundY, pos.Z)
+                landed = true
+            end
+
+            seg.attach0.WorldPosition = prevPos
+            seg.attach1.WorldPosition = pos
+            seg.attach0.WorldCFrame = CFrame.new(prevPos)
+            seg.attach1.WorldCFrame = CFrame.new(pos)
+            seg.beam.Enabled = true
+
+            prevPos = pos
+        end
     end
 
     function BeamEngine.Hide()
-        BeamEngine.beam.Enabled = false
-        BeamEngine.posPart.Position = Vector3.new(0, -9999, 0)
-        BeamEngine.attach0.WorldPosition = Vector3.new(0, -9999, 0)
-        BeamEngine.attach1.WorldPosition = Vector3.new(0, -9999, 0)
+        for _, seg in next, BeamEngine.segments do
+            seg.beam.Enabled = false
+            seg.attach0.WorldPosition = Vector3.new(0, -9999, 0)
+            seg.attach1.WorldPosition = Vector3.new(0, -9999, 0)
+        end
     end
 
     function BeamEngine.SpawnTrailBall(ball)
@@ -3167,50 +3198,69 @@ local function LoadQBAimbot()
         if not lpHead then return end
 
         if ball:GetAttribute('LocalAimbotBall') or (ball.Position - lpHead.Position).Magnitude < 15 then
-            local tAttach0 = Instance.new('Attachment', workspace.Terrain)
-            local tAttach1 = Instance.new('Attachment', workspace.Terrain)
-
-            local tBeam = Instance.new('Beam')
-            tBeam.Attachment0 = tAttach0
-            tBeam.Attachment1 = tAttach1
-            tBeam.Segments = 7500
-            tBeam.Width0 = 1
-            tBeam.Width1 = 1
-            tBeam.FaceCamera = true
-            tBeam.Color = ColorSequence.new(Theme.Accent)
-            tBeam.Transparency = NumberSequence.new({
-                NumberSequenceKeypoint.new(0, 1),
-                NumberSequenceKeypoint.new(0.01, 0),
-                NumberSequenceKeypoint.new(1, 0)
-            })
-            tBeam.Parent = workspace.Terrain
-            RegisterVisualTheme(tBeam, function() tBeam.Color = ColorSequence.new(Theme.Accent) end)
-
-            local tPosPart = Instance.new('Part', workspace.Terrain)
-            tPosPart.Anchored = true
-            tPosPart.CanCollide = false
-            tPosPart.CastShadow = false
-            tPosPart.Size = Vector3.new(3, 3, 3)
-            tPosPart.Shape = Enum.PartType.Ball
-            tPosPart.Material = Enum.Material.Neon
-            tPosPart.Color = Theme.Accent
-            RegisterVisualTheme(tPosPart, function() tPosPart.Color = Theme.Accent end)
-
             local safeDirection = ThrowState.direction or Vector3.new(0, 1, 0)
             local safeAirtime = math.max(tonumber(ThrowState.airtime) or 0.1, 0.1)
-            local curve0, curve1, cf1, cf2 = Kinematics.BeamProjectile(Vector3.new(0, -GRAVITY, 0), safeDirection, lpHead.Position + (safeDirection.Unit * 5), safeAirtime)
+            local g = Vector3.new(0, -GRAVITY, 0)
+            local x0 = lpHead.Position + (safeDirection.Unit * 5)
+            local dt = safeAirtime / BeamEngine.SEGMENT_COUNT
 
-            tBeam.CurveSize0 = curve0
-            tBeam.CurveSize1 = curve1
-            tAttach0.WorldCFrame = cf1
-            tAttach1.WorldCFrame = cf2
-            tPosPart.Position = Vector3.new(cf2.X, cf2.Y, cf2.Z)
+            local tempSegs = {}
+            local prevPos = x0
+            for i = 1, BeamEngine.SEGMENT_COUNT do
+                local tAttach0 = Instance.new('Attachment', workspace.Terrain)
+                local tAttach1 = Instance.new('Attachment', workspace.Terrain)
+
+                local tBeam = Instance.new('Beam')
+                tBeam.Attachment0 = tAttach0
+                tBeam.Attachment1 = tAttach1
+                tBeam.Segments = 2
+                tBeam.Width0 = 0.8
+                tBeam.Width1 = 0.8
+                tBeam.FaceCamera = true
+                tBeam.Color = ColorSequence.new(Theme.Accent)
+                tBeam.Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0),
+                    NumberSequenceKeypoint.new(1, 0)
+                })
+                tBeam.LightEmission = 0.5
+                tBeam.Parent = workspace.Terrain
+                RegisterVisualTheme(tBeam, function() tBeam.Color = ColorSequence.new(Theme.Accent) end)
+
+                local t = i * dt
+                local pos = x0 + safeDirection * t + 0.5 * g * t * t
+
+                if pos.Y <= 4 then
+                    local tPrev = (i - 1) * dt
+                    local prevT = x0 + safeDirection * tPrev + 0.5 * g * tPrev * tPrev
+                    local frac = 1
+                    local diff = prevT.Y - pos.Y
+                    if diff > 0.001 then
+                        frac = math.clamp((prevT.Y - 4) / diff, 0, 1)
+                    end
+                    pos = prevT + (pos - prevT) * frac
+                    pos = Vector3.new(pos.X, 4, pos.Z)
+
+                    tAttach0.WorldPosition = prevPos
+                    tAttach1.WorldPosition = pos
+                    tBeam.Enabled = true
+                    table.insert(tempSegs, {beam = tBeam, a0 = tAttach0, a1 = tAttach1})
+                    break
+                end
+
+                tAttach0.WorldPosition = prevPos
+                tAttach1.WorldPosition = pos
+                tBeam.Enabled = true
+
+                table.insert(tempSegs, {beam = tBeam, a0 = tAttach0, a1 = tAttach1})
+                prevPos = pos
+            end
 
             task.delay(safeAirtime, function()
-                tBeam:Destroy()
-                tAttach0:Destroy()
-                tAttach1:Destroy()
-                tPosPart:Destroy()
+                for _, seg in next, tempSegs do
+                    seg.beam:Destroy()
+                    seg.a0:Destroy()
+                    seg.a1:Destroy()
+                end
             end)
         end
     end
