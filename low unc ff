@@ -2099,8 +2099,12 @@ BindTheme(function()
     local alive = {}
     for i = 1, #VisualThemeTargets do
         local e = VisualThemeTargets[i]
-        local ok, has = pcall(function() return e.Inst and e.Inst.Parent end)
-        if ok and has then
+        -- A destroyed Instance errors on property reads other than Parent,
+        -- so .Name is the liveness probe: a merely *unparented* visual
+        -- (e.g. a hidden magnet radius sphere) must still be recoloured
+        -- and kept in the registry instead of being pruned theme-blind.
+        local ok = pcall(function() return e.Inst.Name end)
+        if ok then
             pcall(e.Apply)
             table.insert(alive, e)
         end
@@ -3097,43 +3101,38 @@ local function LoadQBAimbot()
 
     -- ═══════════════════════════════════════════════════════════════
     -- BEAM VISUAL ENGINE
+    -- Single arc beam: 1 Beam + 2 Attachments (was 40 Beams + 80 Attachments).
+    -- Curve solved by Kinematics.BeamProjectile; no ball-trail effect.
     -- ═══════════════════════════════════════════════════════════════
     local BeamEngine = {
-        segments = {},
-        SEGMENT_COUNT = 40,
+        beam = nil,
+        attach0 = nil,
+        attach1 = nil,
     }
 
     do
-        for i = 1, BeamEngine.SEGMENT_COUNT do
-            local attach0 = Instance.new('Attachment', workspace.Terrain)
-            local attach1 = Instance.new('Attachment', workspace.Terrain)
+        BeamEngine.attach0 = Instance.new('Attachment', workspace.Terrain)
+        BeamEngine.attach1 = Instance.new('Attachment', workspace.Terrain)
 
-            local beam = Instance.new('Beam')
-            beam.Attachment0 = attach0
-            beam.Attachment1 = attach1
-            beam.Segments = 2
-            beam.Width0 = 0.8
-            beam.Width1 = 0.8
-            beam.FaceCamera = true
-            beam.Color = ColorSequence.new(Theme.Accent)
-            beam.Transparency = NumberSequence.new({
-                NumberSequenceKeypoint.new(0, 0),
-                NumberSequenceKeypoint.new(1, 0)
-            })
-            beam.LightEmission = 0.5
-            beam.Enabled = false
-            beam.Parent = workspace.Terrain
+        BeamEngine.beam = Instance.new('Beam')
+        BeamEngine.beam.Attachment0 = BeamEngine.attach0
+        BeamEngine.beam.Attachment1 = BeamEngine.attach1
+        BeamEngine.beam.Segments = 7500
+        BeamEngine.beam.Width0 = 1
+        BeamEngine.beam.Width1 = 1
+        BeamEngine.beam.FaceCamera = true
+        BeamEngine.beam.Color = ColorSequence.new(Theme.Accent)
+        BeamEngine.beam.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.01, 0),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        BeamEngine.beam.Enabled = true
+        BeamEngine.beam.Parent = workspace.Terrain
 
-            RegisterVisualTheme(beam, function()
-                beam.Color = ColorSequence.new(Theme.Accent)
-            end)
-
-            table.insert(BeamEngine.segments, {
-                attach0 = attach0,
-                attach1 = attach1,
-                beam = beam,
-            })
-        end
+        RegisterVisualTheme(BeamEngine.beam, function()
+            BeamEngine.beam.Color = ColorSequence.new(Theme.Accent)
+        end)
     end
 
     function BeamEngine.Update(startOrigin, drawDir, airtime)
@@ -3141,54 +3140,20 @@ local function LoadQBAimbot()
         local g = Vector3.new(0, -GRAVITY, 0)
         local v0 = drawDir
         local x0 = startOrigin + (drawDir.Unit * 5)
-        local dt = safeAirtime / BeamEngine.SEGMENT_COUNT
-        local groundY = 4
 
-        local prevPos = x0
-        local landed = false
-        for i = 1, BeamEngine.SEGMENT_COUNT do
-            local seg = BeamEngine.segments[i]
-            if not seg then break end
+        local curve0, curve1, cf1, cf2 = Kinematics.BeamProjectile(g, v0, x0, safeAirtime)
 
-            if landed then
-                seg.beam.Enabled = false
-                seg.attach0.WorldPosition = Vector3.new(0, -9999, 0)
-                seg.attach1.WorldPosition = Vector3.new(0, -9999, 0)
-                continue
-            end
-
-            local t = i * dt
-            local pos = x0 + v0 * t + 0.5 * g * t * t
-
-            if pos.Y <= groundY then
-                local tPrev = (i - 1) * dt
-                local prevT = x0 + v0 * tPrev + 0.5 * g * tPrev * tPrev
-                local frac = 1
-                local diff = prevT.Y - pos.Y
-                if diff > 0.001 then
-                    frac = math.clamp((prevT.Y - groundY) / diff, 0, 1)
-                end
-                pos = prevT + (pos - prevT) * frac
-                pos = Vector3.new(pos.X, groundY, pos.Z)
-                landed = true
-            end
-
-            seg.attach0.WorldPosition = prevPos
-            seg.attach1.WorldPosition = pos
-            seg.attach0.WorldCFrame = CFrame.new(prevPos)
-            seg.attach1.WorldCFrame = CFrame.new(pos)
-            seg.beam.Enabled = true
-
-            prevPos = pos
-        end
+        BeamEngine.beam.CurveSize0 = curve0
+        BeamEngine.beam.CurveSize1 = curve1
+        BeamEngine.attach0.WorldCFrame = cf1
+        BeamEngine.attach1.WorldCFrame = cf2
+        BeamEngine.beam.Enabled = true
     end
 
     function BeamEngine.Hide()
-        for _, seg in next, BeamEngine.segments do
-            seg.beam.Enabled = false
-            seg.attach0.WorldPosition = Vector3.new(0, -9999, 0)
-            seg.attach1.WorldPosition = Vector3.new(0, -9999, 0)
-        end
+        BeamEngine.beam.Enabled = false
+        BeamEngine.attach0.WorldPosition = Vector3.new(0, -9999, 0)
+        BeamEngine.attach1.WorldPosition = Vector3.new(0, -9999, 0)
     end
 
     function BeamEngine.SpawnTrailBall(ball)
@@ -3197,72 +3162,86 @@ local function LoadQBAimbot()
         local lpHead = lpChar and lpChar:FindFirstChild('Head')
         if not lpHead then return end
 
-        if ball:GetAttribute('LocalAimbotBall') or (ball.Position - lpHead.Position).Magnitude < 15 then
-            local safeDirection = ThrowState.direction or Vector3.new(0, 1, 0)
-            local safeAirtime = math.max(tonumber(ThrowState.airtime) or 0.1, 0.1)
-            local g = Vector3.new(0, -GRAVITY, 0)
-            local x0 = lpHead.Position + (safeDirection.Unit * 5)
-            local dt = safeAirtime / BeamEngine.SEGMENT_COUNT
-
-            local tempSegs = {}
-            local prevPos = x0
-            for i = 1, BeamEngine.SEGMENT_COUNT do
-                local tAttach0 = Instance.new('Attachment', workspace.Terrain)
-                local tAttach1 = Instance.new('Attachment', workspace.Terrain)
-
-                local tBeam = Instance.new('Beam')
-                tBeam.Attachment0 = tAttach0
-                tBeam.Attachment1 = tAttach1
-                tBeam.Segments = 2
-                tBeam.Width0 = 0.8
-                tBeam.Width1 = 0.8
-                tBeam.FaceCamera = true
-                tBeam.Color = ColorSequence.new(Theme.Accent)
-                tBeam.Transparency = NumberSequence.new({
-                    NumberSequenceKeypoint.new(0, 0),
-                    NumberSequenceKeypoint.new(1, 0)
-                })
-                tBeam.LightEmission = 0.5
-                tBeam.Parent = workspace.Terrain
-                RegisterVisualTheme(tBeam, function() tBeam.Color = ColorSequence.new(Theme.Accent) end)
-
-                local t = i * dt
-                local pos = x0 + safeDirection * t + 0.5 * g * t * t
-
-                if pos.Y <= 4 then
-                    local tPrev = (i - 1) * dt
-                    local prevT = x0 + safeDirection * tPrev + 0.5 * g * tPrev * tPrev
-                    local frac = 1
-                    local diff = prevT.Y - pos.Y
-                    if diff > 0.001 then
-                        frac = math.clamp((prevT.Y - 4) / diff, 0, 1)
-                    end
-                    pos = prevT + (pos - prevT) * frac
-                    pos = Vector3.new(pos.X, 4, pos.Z)
-
-                    tAttach0.WorldPosition = prevPos
-                    tAttach1.WorldPosition = pos
-                    tBeam.Enabled = true
-                    table.insert(tempSegs, {beam = tBeam, a0 = tAttach0, a1 = tAttach1})
-                    break
-                end
-
-                tAttach0.WorldPosition = prevPos
-                tAttach1.WorldPosition = pos
-                tBeam.Enabled = true
-
-                table.insert(tempSegs, {beam = tBeam, a0 = tAttach0, a1 = tAttach1})
-                prevPos = pos
-            end
-
-            task.delay(safeAirtime, function()
-                for _, seg in next, tempSegs do
-                    seg.beam:Destroy()
-                    seg.a0:Destroy()
-                    seg.a1:Destroy()
-                end
-            end)
+        if not (ball:GetAttribute('LocalAimbotBall') or (ball.Position - lpHead.Position).Magnitude < 15) then
+            return
         end
+
+        -- Capture the REAL launch state once (the actual ball at release, not the
+        -- aimbot's predicted direction) so the frozen arc matches the true throw.
+        local x0 = ball.Position
+        local v0 = ball.AssemblyLinearVelocity
+        if (not v0) or v0.Magnitude < 1 then -- velocity applied a frame late: resample
+            task.wait()
+            if not (ball and ball.Parent) then return end
+            x0 = ball.Position
+            v0 = ball.AssemblyLinearVelocity
+        end
+        if (not v0) or v0.Magnitude < 1 then
+            v0 = ThrowState.direction or Vector3.new(0, 1, 0)
+        end
+        if (tonumber(v0.Magnitude) or 0) < 1e-3 then
+            v0 = Vector3.new(0, 1, 0)
+        end
+
+        local g = Vector3.new(0, -GRAVITY, 0)
+        local groundY = 4
+
+        -- End the arc at the predicted landing point (clean single freeze).
+        local T = math.max(tonumber(ThrowState.airtime) or 1.5, 0.1)
+        if x0.Y > groundY then
+            local disc = (v0.Y * v0.Y) + (2 * GRAVITY * (x0.Y - groundY))
+            if disc > 0 then
+                local tLand = (v0.Y + math.sqrt(disc)) / GRAVITY
+                if tLand == tLand and tLand > 0.05 then
+                    T = tLand
+                end
+            end
+        end
+
+        local curve0, curve1, cf1, cf2 = Kinematics.BeamProjectile(g, v0, x0, T)
+
+        local tAttach0 = Instance.new('Attachment', workspace.Terrain)
+        local tAttach1 = Instance.new('Attachment', workspace.Terrain)
+
+        local tBeam = Instance.new('Beam')
+        tBeam.Attachment0 = tAttach0
+        tBeam.Attachment1 = tAttach1
+        tBeam.Segments = 7500
+        tBeam.Width0 = 1
+        tBeam.Width1 = 1
+        tBeam.FaceCamera = true
+        tBeam.Color = ColorSequence.new(Theme.Accent)
+        tBeam.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(0.01, 0),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        tBeam.Parent = workspace.Terrain
+        RegisterVisualTheme(tBeam, function() tBeam.Color = ColorSequence.new(Theme.Accent) end)
+
+        tBeam.CurveSize0 = curve0
+        tBeam.CurveSize1 = curve1
+        tAttach0.WorldCFrame = cf1
+        tAttach1.WorldCFrame = cf2
+        tBeam.Enabled = true
+
+        local removed = false
+        local function removeOnce()
+            if removed then return end
+            removed = true
+            tBeam:Destroy()
+            tAttach0:Destroy()
+            tAttach1:Destroy()
+        end
+
+        -- Vanish early if the ball is caught/picked up; otherwise outlive the
+        -- predicted flight by a short tail.
+        ball.AncestryChanged:Connect(function(_, parent)
+            if parent ~= workspace then
+                removeOnce()
+            end
+        end)
+        task.delay(math.clamp(T + 0.75, 1, 8), removeOnce)
     end
 
     -- ═══════════════════════════════════════════════════════════════
@@ -4020,14 +3999,35 @@ local function LoadQBAimbot()
         end
     end)
 
-    -- ═══════════════════════════════════════════════════════════════
+    -- ══════════════════════════════════════════════════════════════════
     -- BALL TRAIL HANDLER
-    -- ═══════════════════════════════════════════════════════════════
+    -- ══════════════════════════════════════════════════════════════════
+    -- "My throw" = my character just RELEASED a Football (the carrier pattern
+    -- elsewhere in this script: the ball is a direct 'Football' child of the
+    -- holder's character). Distance-to-head alone misfires on nearby teammates'
+    -- throws, and 'LocalAimbotBall' is never set by this script.
+    local lastLocalRelease = 0
+
+    local function WatchLocalRelease(char)
+        char.ChildRemoved:Connect(function(child)
+            if child.Name == 'Football' then
+                lastLocalRelease = os.clock()
+            end
+        end)
+    end
+
+    if lp.Character then
+        WatchLocalRelease(lp.Character)
+    end
+    lp.CharacterAdded:Connect(WatchLocalRelease)
+
     workspace.ChildAdded:Connect(function(v)
         if not State.enableQbAimbot then return end
-        if v:IsA('BasePart') and v.Name == 'Football' then
-            BeamEngine.SpawnTrailBall(v)
+        if not (v:IsA('BasePart') and v.Name == 'Football') then return end
+        if not (v:GetAttribute('LocalAimbotBall') or (os.clock() - lastLocalRelease) < 0.5) then
+            return
         end
+        BeamEngine.SpawnTrailBall(v)
     end)
 
     -- ═══════════════════════════════════════════════════════════════
@@ -4512,7 +4512,7 @@ blatantMagnets = CatchingTab:CreateToggle({
 blatantMagnetRange = CatchingTab:CreateSlider({
 	Name = "Blatant Catch Distance",
 	Min = 0,
-	Max = 45,
+	Max = 30,
 	Default = 0,
 	Increment = .1,
 	Suffix = "",
@@ -4553,7 +4553,7 @@ task.spawn(function()
 		local charNow = player.Character
 		local rootNow = charNow and charNow:FindFirstChild("HumanoidRootPart")
 		if blatantMagnets.Value and rootNow then
-			local sizeNow = blatantMagnetRange.Value * 2
+			local sizeNow = math.min(blatantMagnetRange.Value, 30) * 2
 			_blatantMagnetsVisual.Size = Vector3.new(sizeNow, sizeNow, sizeNow)
 			_blatantMagnetsVisual.CFrame = CFrame.new(rootNow.Position)
 			_blatantMagnetsVisualRainbow.Size = Vector3.new(sizeNow + 0.4, sizeNow + 0.4, sizeNow + 0.4)
@@ -4593,7 +4593,7 @@ task.spawn(function()
 			continue
 		end
 		local s = (ball.Position - hrp.Position).Magnitude
-		if s <= 0 or s > blatantMagnetRange.Value then
+		if s <= 0 or s > math.min(blatantMagnetRange.Value, 30) then
 			continue
 		end
 		local r = hrp.CFrame
@@ -4621,7 +4621,7 @@ task.spawn(function()
         for _, catchPart in next, char:GetChildren() do
             if catchPart:IsA("BasePart") and catchPart.Name:lower():find("catch") then
                 local s = (ball.Position - catchPart.Position).Magnitude
-                if s <= blatantMagnetRange.Value then
+                if s <= math.min(blatantMagnetRange.Value, 30) then
                     pcall(function()
                         firetouchinterest(catchPart, ball, 0)
                         firetouchinterest(catchPart, ball, 1)
@@ -5429,7 +5429,8 @@ local function LoadPhysicsTab()
             end
 
             local originalSize = EndzoneEngine.originalSizes[endPart]
-            local zSize = Config.endzoneReachValue >= 10 and Config.endzoneReachValue or Config.endzoneReachValue / 10
+            local reach = math.clamp(tonumber(Config.endzoneReachValue) or 5, 5, 25)
+            local zSize = reach >= 10 and reach or reach / 10
             endPart.Size = Vector3.new(originalSize.X, originalSize.Y, zSize)
         end
     end
@@ -5672,7 +5673,7 @@ local function LoadPhysicsTab()
     endzoneReachValue = PhysicsTab:CreateSlider({
         Name = 'Endzone Reach',
         Min = 5,
-        Max = 35,
+        Max = 25,
         Default = 5,
         Increment = 1,
         Suffix = '',
@@ -7377,117 +7378,82 @@ local function LoadAutomaticsTab()
     -- ═══════════════════════════════════════════════════════════════
     -- DRAWING ENGINE — RUSH VISUALIZATION
     -- ═══════════════════════════════════════════════════════════════
-    local RushVisuals = {}
-    do
-        local LINE_THICKNESS = 0.25
-        local ARROW_SIZE = 1.5
-        local CIRCLE_SIZE = Vector3.new(3, 3, 3)
+    local RushVisuals = { elements = {}, ready = false }
 
-        local function _makeLinePart(colorKey)
-            local p = Instance.new('Part')
-            p.Name = 'FF3_RushLine'
-            p.Anchored = true
-            p.CanCollide = false
-            p.CanTouch = false
-            p.CanQuery = false
-            p.CastShadow = false
-            p.Material = Enum.Material.Neon
-            p.Color = (Theme and Theme[colorKey]) or (Theme and Theme.Accent) or Color3.fromRGB(255, 255, 255)
-            p.Size = Vector3.new(LINE_THICKNESS, LINE_THICKNESS, 1)
-            p.Transparency = 0
-            p.Parent = workspace.Terrain
-            return p
-        end
+    -- ═══════════════════════════════════════════════════════════════
+    -- RUSH OVERLAY — 2D Drawing objects (PC-only), no workspace parts
+    -- ═══════════════════════════════════════════════════════════════
+    local function _rushColorOf(key)
+        return (Theme and Theme[key]) or (Theme and Theme.Accent) or Color3.fromRGB(255, 255, 255)
+    end
 
-        local function _makeArrowPart(colorKey)
-            local p = Instance.new('Part')
-            p.Name = 'FF3_RushArrow'
-            p.Anchored = true
-            p.CanCollide = false
-            p.CanTouch = false
-            p.CanQuery = false
-            p.CastShadow = false
-            p.Material = Enum.Material.Neon
-            p.Color = (Theme and Theme[colorKey]) or (Theme and Theme.Accent) or Color3.fromRGB(255, 255, 255)
-            p.Size = Vector3.new(ARROW_SIZE, ARROW_SIZE, ARROW_SIZE)
-            p.Shape = Enum.PartType.Ball
-            p.Transparency = 0.3
-            p.Parent = workspace.Terrain
-            return p
-        end
-
-        local function _makeCirclePart(colorKey)
-            local p = Instance.new('Part')
-            p.Name = 'FF3_RushCircle'
-            p.Anchored = true
-            p.CanCollide = false
-            p.CanTouch = false
-            p.CanQuery = false
-            p.CastShadow = false
-            p.Material = Enum.Material.ForceField
-            p.Color = (Theme and Theme[colorKey]) or (Theme and Theme.Accent) or Color3.fromRGB(255, 255, 255)
-            p.Size = CIRCLE_SIZE
-            p.Shape = Enum.PartType.Ball
-            p.Transparency = 0.4
-            p.Parent = workspace.Terrain
-            return p
-        end
-
-        local function _positionLine(part, from, to)
-            if not part then return end
-            local mid = (from + to) / 2
-            local dist = (to - from).Magnitude
-            part.Size = Vector3.new(LINE_THICKNESS, LINE_THICKNESS, math.max(dist, 0.01))
-            part.CFrame = CFrame.lookAt(mid, to)
-        end
-
-        local function _hideLine(part)
-            if not part then return end
-            part.Size = Vector3.new(0, 0, 0)
-            part.CFrame = CFrame.new(0, -9999, 0)
-        end
-
-        local function _hideArrow(part)
-            if not part then return end
-            part.CFrame = CFrame.new(0, -9999, 0)
-        end
-
-        RushVisuals.elements = {
-            line = _makeLinePart('Accent'),
-            circle = _makeCirclePart('Accent'),
-            arrow = _makeArrowPart('Accent'),
-            holderLine = _makeLinePart('Accent2'),
-            holderArrow = _makeArrowPart('Accent2'),
-            moveLine = _makeLinePart('Accent3'),
-            moveArrow = _makeArrowPart('Accent3'),
-        }
-
-        function RushVisuals:HideAll()
-            for _, part in pairs(self.elements) do
-                if part and part.Parent then
-                    if part.Shape == Enum.PartType.Ball then
-                        _hideArrow(part)
-                    else
-                        _hideLine(part)
-                    end
-                end
+    local function _newRushDraw(kind, colorKey, thickness)
+        local ok, obj = pcall(function()
+            return Drawing and Drawing.new and Drawing.new(kind)
+        end)
+        if ok and obj then
+            obj.Color = _rushColorOf(colorKey)
+            obj.Thickness = thickness or 2
+            obj.Transparency = 1 -- Drawing API alpha: 1 = fully visible (opposite of Part.Transparency)
+            obj.Visible = false
+            obj.ZIndex = 5
+            if kind == 'Circle' then
+                obj.NumSides = 36
+                obj.Radius = 9
+                obj.Filled = false
+            elseif kind == 'Triangle' then
+                obj.Filled = true
             end
+            return obj
         end
+    end
 
-        function RushVisuals:UpdateTheme()
-            local function _safeColor(part, key)
-                if part and part.Parent then
-                    part.Color = (Theme and Theme[key]) or (Theme and Theme.Accent) or Color3.fromRGB(255, 255, 255)
-                end
-            end
-            _safeColor(self.elements.line, 'Accent')
-            _safeColor(self.elements.circle, 'Accent')
-            _safeColor(self.elements.arrow, 'Accent')
-            _safeColor(self.elements.holderLine, 'Accent2')
-            _safeColor(self.elements.holderArrow, 'Accent2')
-            _safeColor(self.elements.moveLine, 'Accent3')
-            _safeColor(self.elements.moveArrow, 'Accent3')
+    local function _ensureRushDraws()
+        if RushVisuals.ready then return end
+        local e = RushVisuals.elements
+        e.line = _newRushDraw('Line', 'Accent', 2.5)
+        e.circle = _newRushDraw('Circle', 'Accent', 2)
+        e.arrow = _newRushDraw('Triangle', 'Accent', 1)
+        e.holderLine = _newRushDraw('Line', 'Accent2', 2)
+        e.holderArrow = _newRushDraw('Triangle', 'Accent2', 1)
+        e.moveLine = _newRushDraw('Line', 'Accent3', 2)
+        e.moveArrow = _newRushDraw('Triangle', 'Accent3', 1)
+        RushVisuals.ready = true
+    end
+
+    local function _orientArrow(tri, tip, dir, size)
+        if not tri then return end
+        local len = dir.Magnitude
+        if not (len > 0.0001) then
+            tri.Visible = false
+            return
         end
+        local d = dir / len
+        local px = Vector2.new(-d.Y, d.X)
+        local base = tip - d * size
+        tri.PointA = tip
+        tri.PointB = base + px * (size * 0.55)
+        tri.PointC = base - px * (size * 0.55)
+        tri.Visible = true
+    end
+
+    function RushVisuals:HideAll()
+        for _, d in pairs(self.elements) do
+            pcall(function()
+                d.Visible = false
+            end)
+        end
+    end
+
+    function RushVisuals:UpdateTheme()
+        local e = self.elements
+        if e.line then e.line.Color = _rushColorOf('Accent') end
+        if e.circle then e.circle.Color = _rushColorOf('Accent') end
+        if e.arrow then e.arrow.Color = _rushColorOf('Accent') end
+        if e.holderLine then e.holderLine.Color = _rushColorOf('Accent2') end
+        if e.holderArrow then e.holderArrow.Color = _rushColorOf('Accent2') end
+        if e.moveLine then e.moveLine.Color = _rushColorOf('Accent3') end
+        if e.moveArrow then e.moveArrow.Color = _rushColorOf('Accent3') end
     end
 
     -- ═══════════════════════════════════════════════════════════════
@@ -7585,6 +7551,8 @@ local function LoadAutomaticsTab()
     -- RENDER LOOP — VISUALIZATION
     -- ═══════════════════════════════════════════════════════════════
     RunService.RenderStepped:Connect(function()
+        _ensureRushDraws()
+
         if not (State.visualizeRushing.Value and State.autoRush.Value) then
             RushVisuals:HideAll()
             return
@@ -7593,58 +7561,84 @@ local function LoadAutomaticsTab()
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local cam = workspace.CurrentCamera
 
-        if not (root and humanoid) then
+        if not (root and humanoid and cam) then
             RushVisuals:HideAll()
             return
         end
 
         local targetRoot, targetHum = Predictor.GetBallCarrier()
-        if not targetRoot then
+        if not targetRoot or not targetHum then
             RushVisuals:HideAll()
             return
         end
 
-        local selfPos = root.Position
-        local tgtPos = targetRoot.Position
-
-        -- Main line from self to target
-        _positionLine(RushVisuals.elements.line, selfPos, tgtPos)
-
-        -- Target circle marker
-        if RushVisuals.elements.circle then
-            RushVisuals.elements.circle.CFrame = CFrame.new(tgtPos)
+        local selfPos, selfVis = cam:WorldToViewportPoint(root.Position)
+        local tgtPos, tgtVis = cam:WorldToViewportPoint(targetRoot.Position)
+        if not selfVis or not tgtVis then
+            RushVisuals:HideAll()
+            return
         end
 
-        -- Target arrow (direction dot at target)
-        if RushVisuals.elements.arrow then
-            RushVisuals.elements.arrow.CFrame = CFrame.new(tgtPos + Vector3.new(0, 2, 0))
+        local e = RushVisuals.elements
+        local selfVec = Vector2.new(selfPos.X, selfPos.Y)
+        local tgtVec = Vector2.new(tgtPos.X, tgtPos.Y)
+
+        -- Main line from self to target
+        if e.line then
+            e.line.From = selfVec
+            e.line.To = tgtVec
+            e.line.Visible = true
+        end
+        _orientArrow(e.arrow, tgtVec, tgtVec - selfVec, 16)
+
+        -- Target circle marker
+        if e.circle then
+            e.circle.Position = tgtVec
+            e.circle.Visible = true
         end
 
         -- Carrier movement prediction line
         local hMove = targetHum.MoveDirection
         if hMove.Magnitude > 0.01 then
-            local futurePos = tgtPos + (hMove * 6)
-            _positionLine(RushVisuals.elements.holderLine, tgtPos, futurePos)
-            if RushVisuals.elements.holderArrow then
-                RushVisuals.elements.holderArrow.CFrame = CFrame.new(futurePos + Vector3.new(0, 2, 0))
+            local fPos, fVis = cam:WorldToViewportPoint(targetRoot.Position + (hMove * 6))
+            if fVis then
+                local fVec = Vector2.new(fPos.X, fPos.Y)
+                if e.holderLine then
+                    e.holderLine.From = tgtVec
+                    e.holderLine.To = fVec
+                    e.holderLine.Visible = true
+                end
+                _orientArrow(e.holderArrow, fVec, fVec - tgtVec, 13)
+            else
+                if e.holderLine then e.holderLine.Visible = false end
+                if e.holderArrow then e.holderArrow.Visible = false end
             end
         else
-            _hideLine(RushVisuals.elements.holderLine)
-            _hideArrow(RushVisuals.elements.holderArrow)
+            if e.holderLine then e.holderLine.Visible = false end
+            if e.holderArrow then e.holderArrow.Visible = false end
         end
 
         -- Self movement indicator line
         local myMove = humanoid.MoveDirection
         if myMove.Magnitude > 0.01 then
-            local myFuturePos = selfPos + (myMove * 6)
-            _positionLine(RushVisuals.elements.moveLine, selfPos, myFuturePos)
-            if RushVisuals.elements.moveArrow then
-                RushVisuals.elements.moveArrow.CFrame = CFrame.new(myFuturePos + Vector3.new(0, 2, 0))
+            local mPos, mVis = cam:WorldToViewportPoint(root.Position + (myMove * 6))
+            if mVis then
+                local mVec = Vector2.new(mPos.X, mPos.Y)
+                if e.moveLine then
+                    e.moveLine.From = selfVec
+                    e.moveLine.To = mVec
+                    e.moveLine.Visible = true
+                end
+                _orientArrow(e.moveArrow, mVec, mVec - selfVec, 13)
+            else
+                if e.moveLine then e.moveLine.Visible = false end
+                if e.moveArrow then e.moveArrow.Visible = false end
             end
         else
-            _hideLine(RushVisuals.elements.moveLine)
-            _hideArrow(RushVisuals.elements.moveArrow)
+            if e.moveLine then e.moveLine.Visible = false end
+            if e.moveArrow then e.moveArrow.Visible = false end
         end
     end)
 
